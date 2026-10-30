@@ -1,0 +1,413 @@
+.game-dialog {
+  background: #151a13;
+  color: #e7ecdf;
+  border: 1px solid #46513b;
+  width: min(1100px, calc(100% - 30px));
+  max-height: 94dvh;
+  padding: 0;
+  border-radius: 4px;
+  overflow: auto;
+}
+.game-dialog::backdrop {
+  background: #050704d9;
+  backdrop-filter: blur(5px);
+}
+.dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 22px;
+  border-bottom: 1px solid #36432e;
+  position: sticky;
+  top: 0;
+  background: #151a13;
+  z-index: 3;
+}
+.dialog-header strong {
+  font-size: 15px;
+}
+.close-button {
+  background: none;
+  border: 0;
+  color: #becab1;
+  font-size: 12px;
+  padding: 9px;
+}
+.dialog-body {
+  padding: 22px;
+}
+.tetris-layout,
+.emulator-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 30px;
+}
+.tetris-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  background: #0d110c;
+  padding: 15px;
+}
+.tetris-canvas {
+  width: auto;
+  max-width: 100%;
+  height: min(65dvh, 600px);
+  aspect-ratio: 1 / 2;
+  image-rendering: pixelated;
+  border: 1px solid #4e5e40;
+}
+.game-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.game-panel h2 {
+  font-size: 28px;
+  line-height: 1.05;
+  letter-spacing: -1px;
+  margin: 3px 0 13px;
+}
+.game-stats {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid #36432e;
+  border-bottom: 1px solid #36432e;
+  padding: 10px 0;
+  margin-bottom: 4px;
+}
+.stat-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+}
+.stat-row span {
+  font: 9px monospace;
+  letter-spacing: 1px;
+  color: #91a47e;
+}
+.stat-row strong {
+  font: 17px monospace;
+  color: #e2ebd7;
+}
+.game-panel .button,
+.game-panel .select {
+  width: 100%;
+}
+.game-status {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #c1d2af;
+  min-height: 40px;
+  margin: 10px 0 0;
+  overflow-wrap: anywhere;
+}
+.control-hint {
+  font:
+    10px / 1.7 ui-monospace,
+    monospace;
+  color: #8e9e7d;
+}
+.touch-controls {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 5px;
+  margin-top: 14px;
+  width: 100%;
+  max-width: 420px;
+}
+.touch-key {
+  border: 1px solid #4b6040;
+  border-radius: 3px;
+  background: #273421;
+  color: #d0e6b9;
+  min-height: 46px;
+  min-width: 0;
+  font: 11px monospace;
+  user-select: none;
+  touch-action: none;
+  padding: 8px 4px;
+}
+.touch-key:active {
+  background: #526b3e;
+  color: #fff;
+}
+.file-input {
+  font-size: 11px;
+  max-width: 100%;
+  padding: 14px 0;
+  min-height: 52px;
+}
+.file-input::file-selector-button {
+  background: #b3ce91;
+  color: #182011;
+  border: 0;
+  padding: 12px;
+  margin-right: 8px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.nes-display,
+.doom-display {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.nes-screen,
+.doom-screen {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background: #090c08;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #36432e;
+  min-height: 200px;
+  overflow: hidden;
+}
+.nes-screen:empty::after {
+  content: "INSERT ROM";
+  font: 22px monospace;
+  color: #6f845c;
+  letter-spacing: 4px;
+}
+.nes-screen canvas {
+  max-width: 100%;
+  max-height: 65dvh;
+  image-rendering: pixelated;
+}
+.nes-controls,
+.doom-controls {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+.doom-screen:empty::after {
+  content: "INSERT WAD";
+  font: 22px monospace;
+  color: #a78159;
+  letter-spacing: 4px;
+}
+.doom-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  aspect-ratio: 4 / 3;
+}
+.doom-controls .touch-key {
+  border-color: #70523b;
+  background: #362719;
+  color: #e6c6a6;
+}
+@media (max-width: 760px) {
+  .game-dialog {
+    width: calc(100% - 12px);
+    max-height: 98dvh;
+  }
+  .dialog-header {
+    padding: 10px 14px;
+  }
+  .dialog-body {
+    padding: 12px;
+  }
+  .tetris-layout,
+  .emulator-layout {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+  .tetris-stage {
+    padding: 10px;
+  }
+  .tetris-canvas {
+    height: min(62dvh, 570px);
+  }
+  .game-panel {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .game-panel > .eyebrow,
+  .game-panel > h2,
+  .game-stats,
+  .game-panel > .game-status,
+  .game-panel > .control-hint,
+  .game-panel > .file-input {
+    grid-column: 1 / -1;
+  }
+  .game-panel h2 {
+    font-size: 25px;
+    margin-bottom: 6px;
+  }
+  .game-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 25px;
+  }
+  .game-panel > .pill {
+    align-self: center;
+    justify-self: start;
+  }
+  .game-panel .button {
+    font-size: 11px;
+    padding: 12px 8px;
+  }
+  .touch-controls {
+    margin-top: 10px;
+  }
+  .touch-key {
+    min-height: 43px;
+  }
+  .emulator-layout .game-panel > .file-input {
+    grid-column: 1 / -1;
+  }
+}
+
+.compact-hud {
+  display: none;
+}
+.game-panel > .pill {
+  align-self: flex-start;
+  line-height: 1.5;
+}
+@media (max-width: 760px) {
+  .compact-hud {
+    display: block;
+    width: 100%;
+    max-width: 320px;
+    margin: 0 0 9px;
+    color: #b3ce91;
+    font: 10px monospace;
+    text-align: center;
+  }
+  .tetris-canvas {
+    height: min(61dvh, 570px);
+  }
+}
+
+.mobile-gamepad {
+  display: none;
+  user-select: none;
+  touch-action: none;
+}
+.pad-playing-area {
+  position: relative;
+  height: 172px;
+}
+.joystick-zone {
+  position: absolute;
+  bottom: 4px;
+  width: 126px;
+  height: 144px;
+  touch-action: none;
+}
+.stick-0 {
+  left: 0;
+}
+.stick-1 {
+  right: 0;
+}
+.joystick-label {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font: 9px monospace;
+  color: #a6ac96;
+  pointer-events: none;
+}
+.pad-face-buttons {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.pad-button {
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+  border: 1px solid #796048;
+  border-radius: 50%;
+  background: #413023;
+  color: #eed6bb;
+  font: bold 12px monospace;
+  min-height: 44px;
+  min-width: 44px;
+}
+.pad-button:active {
+  background: #aa6441;
+}
+.fire-button {
+  position: absolute;
+  right: 5px;
+  top: 0;
+  width: 66px;
+  height: 66px;
+  background: #a34334;
+  border-color: #d07d61;
+}
+.use-button {
+  position: absolute;
+  left: calc(50% - 40px);
+  top: 0;
+  width: 50px;
+  height: 50px;
+}
+.doom-gamepad .stick-1 {
+  right: 73px;
+}
+.doom-gamepad .stick-0 {
+  width: 110px;
+}
+.doom-gamepad .stick-1 {
+  width: 110px;
+}
+.pad-utilities {
+  display: flex;
+  gap: 7px;
+  justify-content: center;
+  flex-wrap: wrap;
+  padding-top: 12px;
+}
+.pad-utilities .pad-button {
+  border-radius: 18px;
+  font-size: 8px;
+  padding: 7px 7px;
+  min-height: 36px;
+}
+.nes-a,
+.nes-b {
+  position: absolute;
+  width: 68px;
+  height: 68px;
+  background: #bc4c39;
+  border-color: #e18769;
+  font-size: 24px;
+}
+.nes-a {
+  right: 0;
+  top: 10px;
+}
+.nes-b {
+  right: 74px;
+  top: 48px;
+}
+.mario-gamepad .pad-button {
+  color: #faf0dd;
+}
+.mario-gamepad .pad-utilities .pad-button {
+  background: #2d3428;
+  border-color: #62704e;
+}
+.pad-button:focus-visible {
+  outline: 2px solid #f0804e;
+  outline-offset: 3px;
+}
+@media (pointer: coarse), (max-width: 760px) {
+  .mobile-gamepad {
+    display: block;
+  }
+}

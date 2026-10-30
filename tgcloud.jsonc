@@ -1,0 +1,18 @@
+{
+  "static": {
+    "source": "dist/client",
+    "spa": true,
+    "immutable": [
+      "/assets/*"
+    ],
+    "headers": [
+      {
+        "path": "/*",
+        "set": {
+          "Referrer-Policy": "no-referrer"
+        }
+      }
+    ]
+  },
+  "$schema": "./node_modules/@tgcloud/cli/schema/tgcloud.json"
+}

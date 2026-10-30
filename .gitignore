@@ -1,0 +1,17 @@
+node_modules/
+dist/
+tgcloud/
+.tgcloud/
+.env
+.env.*
+!.env.example
+.cache/
+coverage/
+playwright-report/
+test-results/
+*.wad
+*.WAD
+*.nes
+*.NES
+public/engines/doom/
+AGENTS.md

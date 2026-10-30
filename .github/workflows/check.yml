@@ -1,0 +1,25 @@
+name: Check
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/playwright
+      - name: Browser smoke test
+        run: npm run test:browser
+      - name: Production guest restrictions
+        run: node scripts/browser-smoke.ts --production

@@ -1,0 +1,42 @@
+{
+  "name": "tg-games",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.cloud.json",
+    "test": "vitest run",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "build": "node scripts/build.ts",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build",
+    "cloud:status": "tgcloud status",
+    "cloud:login": "tgcloud login",
+    "cloud:migrate": "tgcloud migrate",
+    "deploy": "npm run check && tgcloud push",
+    "build:doom": "node scripts/build-doom.ts",
+    "test:browser": "node scripts/browser-smoke.ts",
+    "setup:doom": "node scripts/setup-doom.ts",
+    "test:production": "npm run build && node scripts/browser-smoke.ts --production",
+    "diagnose:bot": "npm run build && node scripts/diagnose-bot.ts",
+    "configure:bot": "npm run build && node scripts/configure-bot.ts"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.4",
+    "@playwright/test": "^1.64.1",
+    "@tgcloud/cli": "^0.2.0",
+    "@types/node": "^26.6.6",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^4.1.12"
+  },
+  "dependencies": {
+    "jsnes": "^2.1.0",
+    "nipplejs": "^1.0.4"
+  }
+}

@@ -1,3 +1,4 @@
+import type { MineSize } from '../games/minesweeper/engine.ts';
 import { type LaunchTarget, parseLaunch } from '../shared/launch.ts';
 import { mountLeaderboard } from './ui/leaderboard.ts';
 import './styles.css';
@@ -240,8 +241,15 @@ function renderCatalog(): void {
   content.append(hero, section, note);
 }
 function routeHash(target: LaunchTarget): string {
-  if (target.view === 'game')
-    return `#game_${target.game}${target.game === 'tetris' ? `_${target.mode ?? 'marathon'}` : ''}`;
+  if (target.view === 'game') {
+    const variant =
+      target.game === 'tetris'
+        ? `_${target.mode ?? 'marathon'}`
+        : target.game === 'minesweeper' && target.size
+          ? `_${target.size}`
+          : '';
+    return `#game_${target.game}${variant}`;
+  }
   if (target.view === 'leaderboard')
     return target.groupId ? `#board_${target.groupId}` : '#leaderboard';
   return '#games';
@@ -277,7 +285,7 @@ function renderPage(target: LaunchTarget, restoreFocus = false): void {
   document.title = 'Arcade — игры в Telegram';
   if (target.view === 'game') {
     const game = CATALOG.find((game) => game.id === target.game && game.available);
-    if (game) void mountGamePage(game, target.mode ?? 'marathon');
+    if (game) void mountGamePage(game, target.mode ?? 'marathon', target.size ?? '9x9');
     else navigate({ view: 'catalog' }, true);
   } else if (target.view === 'leaderboard') {
     tabs(true);
@@ -292,7 +300,11 @@ function renderPage(target: LaunchTarget, restoreFocus = false): void {
         ?.focus({ preventScroll: true });
   }
 }
-async function mountGamePage(game: GameInfo, initialMode: TetrisMode): Promise<void> {
+async function mountGamePage(
+  game: GameInfo,
+  initialMode: TetrisMode,
+  initialSize: MineSize,
+): Promise<void> {
   tabs(false);
   document.title = `${game.title} — Arcade`;
   const page = element('section', 'game-page');
@@ -346,7 +358,10 @@ async function mountGamePage(game: GameInfo, initialMode: TetrisMode): Promise<v
               module.mountTetris(host, initialMode),
             )
         : game.id === 'minesweeper'
-          ? (await import('./games/minesweeper/controller.ts')).mountMinesweeper
+          ? (host: { container: HTMLElement; onClose(): void }) =>
+              import('./games/minesweeper/controller.ts').then((module) =>
+                module.mountMinesweeper(host, initialSize),
+              )
           : game.id === 'mario'
             ? (await import('./games/mario/adapter.ts')).mountMario
             : (await import('./games/doom/adapter.ts')).mountDoom;

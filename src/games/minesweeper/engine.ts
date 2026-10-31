@@ -12,7 +12,7 @@ export type MineAction = (typeof MINE_ACTIONS)[number];
 export type MineStatus = 'playing' | 'won' | 'lost';
 export interface MineState {
   size: MineSize;
-  // -1 = mine, 0..8 = adjacent mines. Never send hidden values to ranked clients.
+  // -1 = mine, 0..8 = adjacent mines.
   cells: number[];
   revealed: boolean[];
   flags: boolean[];
@@ -99,14 +99,17 @@ export function actMines(state: MineState, action: MineAction, cell: number): vo
     }
     if (state.cells[i] === 0) pending.push(...neighbors(state.size, i));
   }
-  if (state.cells.every((value, i) => value === -1 || state.revealed[i])) state.status = 'won';
+  if (state.cells.every((value, i) => value === -1 || state.revealed[i])) {
+    state.status = 'won';
+    state.flags = state.cells.map((value) => value === -1);
+  }
 }
 export function mineBoard(state: MineState): MineBoard {
   return {
     size: state.size,
     status: state.status,
     cells: state.cells.map((value, i) =>
-      state.revealed[i] || (state.status !== 'playing' && value === -1)
+      state.revealed[i] || (state.status === 'lost' && value === -1)
         ? value
         : state.flags[i]
           ? -3

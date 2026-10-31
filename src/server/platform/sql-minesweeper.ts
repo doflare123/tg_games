@@ -1,134 +1,93 @@
-import {
-  LEVELS,
-  MINE_LIMIT_MS,
-  MINE_RULESET,
-  type MineSize,
-  SIZES,
-} from '../../games/minesweeper/engine.ts';
+import { MINE_RULESET, type MineSize } from '../../games/minesweeper/engine.ts';
 import type { Period, Player } from '../../shared/contracts.ts';
-import { integer, object, oneOf, text } from '../../shared/errors.ts';
-import { decodeMineLeaderboard, type MineLeaderboard } from '../../shared/minesweeper.ts';
-import type { MineRepository, StoredMineRun } from '../domain/minesweeper.ts';
-import type { SqlDatabase, SqlParameters } from './sql-repository.ts';
-import { returnedRows } from './sql-write.ts';
+import { integer, object, text } from '../../shared/errors.ts';
+import {
+  decodeMineLeaderboard,
+  decodeMineResult,
+  type MineLeaderboard,
+  type MineResult,
+} from '../../shared/minesweeper.ts';
+import type {
+  MineBoardScope,
+  MineNotificationResult,
+  MineRepository,
+  StoredMineResult,
+} from '../domain/minesweeper.ts';
+import type { SqlDatabase } from './sql-repository.ts';
 
-function decodeStored(value: unknown): StoredMineRun {
-  const r = object(value);
-  const state = object(JSON.parse(text(r.state_json, 1, 20000)));
-  const size = oneOf(r.size, SIZES);
-  const { width, height } = LEVELS[size];
-  const total = width * height;
-  function array(value: unknown): unknown[] {
-    if (!Array.isArray(value) || value.length !== total) throw new Error('Invalid mine state');
-    return value;
-  }
-  function bool(value: unknown): boolean {
-    if (typeof value !== 'boolean') throw new Error('Invalid mine flag');
-    return value;
-  }
-  if (state.size !== size || state.status !== r.status) throw new Error('Invalid mine state');
-  const initialFlags = state.initialFlags ?? [];
-  if (!Array.isArray(initialFlags) || initialFlags.length > total)
-    throw new Error('Invalid initial flags');
-  const startedAt = integer(r.started_at, 0, Number.MAX_SAFE_INTEGER);
-  const elapsedMs = integer(r.elapsed_ms, 0, MINE_LIMIT_MS);
-  // Old runs used wall time. Continue them from their last accepted elapsed time.
-  const timing =
-    state.timing === undefined
-      ? { runningSince: startedAt + elapsedMs, pending: false }
-      : object(state.timing);
-  return {
-    id: text(r.id, 1, 100),
-    playerId: integer(r.player_id, 1, Number.MAX_SAFE_INTEGER),
-    playerName: text(r.player_name, 1, 100),
-    ruleset: text(r.ruleset),
-    revision: integer(r.revision, 0, 20000),
-    state: {
-      size,
-      cells: array(state.cells).map((v) => integer(v, -1, 8)),
-      revealed: array(state.revealed).map(bool),
-      flags: array(state.flags).map(bool),
-      status: oneOf(state.status, ['playing', 'won', 'lost']),
-    },
-    firstCell: integer(r.first_cell, 0, total - 1),
-    initialFlags: initialFlags.map((cell) => integer(cell, 0, total - 1)),
-    startedAt,
-    elapsedMs,
-    timing: {
-      runningSince: integer(timing.runningSince, startedAt, Number.MAX_SAFE_INTEGER),
-      pending: bool(timing.pending),
-    },
-    lastAction: r.last_action === null ? null : text(r.last_action, 1, 200),
-  };
-}
-function params(run: StoredMineRun): SqlParameters {
-  return {
-    ':id': run.id,
-    ':player': run.playerId,
-    ':name': run.playerName,
-    ':ruleset': run.ruleset,
-    ':size': run.state.size,
-    ':revision': run.revision,
-    ':state': stateJson(run),
-    ':status': run.state.status,
-    ':first': run.firstCell,
-    ':started': run.startedAt,
-    ':elapsed': run.elapsedMs,
-    ':action': run.lastAction,
-  };
-}
-function stateJson(run: StoredMineRun): string {
-  return JSON.stringify({ ...run.state, initialFlags: run.initialFlags, timing: run.timing });
-}
 export class SqlMineRepository implements MineRepository {
   constructor(private readonly db: SqlDatabase) {}
-  async get(id: string): Promise<StoredMineRun | null> {
-    const value = await this.db.get('SELECT * FROM minesweeper_runs WHERE id=:id', { ':id': id });
-    return value == null ? null : decodeStored(value);
+  async getResult(id: string): Promise<MineResult | null> {
+    const value = await this.db.get(
+      "SELECT id,size,elapsed_ms FROM minesweeper_runs WHERE id=:id AND status='won' AND ruleset=:ruleset",
+      { ':id': id, ':ruleset': MINE_RULESET },
+    );
+    if (value == null) return null;
+    const r = object(value);
+    return decodeMineResult({ id: r.id, size: r.size, elapsedMs: r.elapsed_ms });
   }
-  async create(run: StoredMineRun): Promise<{ run: StoredMineRun; created: boolean }> {
-    const result = await this.db.run(
+  async record(result: StoredMineResult): Promise<MineResult> {
+    await this.db.run(
       `INSERT INTO minesweeper_runs
       (id,player_id,player_name,ruleset,size,revision,state_json,status,first_cell,started_at,elapsed_ms,last_action)
-      VALUES (:id,:player,:name,:ruleset,:size,:revision,:state,:status,:first,:started,:elapsed,:action)
-      ON CONFLICT(id) DO NOTHING RETURNING id`,
-      params(run),
-    );
-    const stored = await this.get(run.id);
-    if (!stored) throw new Error('Mine run insert failed');
-    return { run: stored, created: returnedRows(result).length === 1 };
-  }
-  async save(run: StoredMineRun, expectedRevision: number): Promise<boolean> {
-    const result = await this.db.run(
-      `UPDATE minesweeper_runs SET revision=:revision,state_json=:state,status=:status,
-      elapsed_ms=:elapsed,last_action=:action WHERE id=:id AND revision=:expected RETURNING id`,
+      VALUES (:id,:player,:name,:ruleset,:size,0,:state,'won',0,:created,:elapsed,NULL)
+      ON CONFLICT(id) DO NOTHING`,
       {
-        ':id': run.id,
-        ':revision': run.revision,
-        ':state': stateJson(run),
-        ':status': run.state.status,
-        ':elapsed': run.elapsedMs,
-        ':action': run.lastAction,
-        ':expected': expectedRevision,
+        ':id': result.id,
+        ':player': result.playerId,
+        ':name': result.playerName,
+        ':ruleset': MINE_RULESET,
+        ':size': result.size,
+        ':state': JSON.stringify({
+          size: result.size,
+          elapsedMs: result.elapsedMs,
+          socialProcessed: false,
+        }),
+        ':created': result.createdAt,
+        ':elapsed': result.elapsedMs,
       },
     );
-    return returnedRows(result).length === 1;
+    const stored = await this.getResult(result.id);
+    if (!stored) throw new Error('Mine result insert failed');
+    return stored;
   }
-  async resumeTimer(run: StoredMineRun, runningSince: number): Promise<StoredMineRun | null> {
-    if (!run.timing.pending || run.state.status !== 'playing') return null;
-    const result = await this.db.run(
-      `UPDATE minesweeper_runs SET state_json=:state
-      WHERE id=:id AND revision=:revision AND status='playing'
-      AND state_json=:previous RETURNING *`,
-      {
-        ':id': run.id,
-        ':revision': run.revision,
-        ':previous': stateJson(run),
-        ':state': stateJson({ ...run, timing: { runningSince, pending: false } }),
-      },
+  async getStored(id: string): Promise<MineNotificationResult | null> {
+    const value = await this.db.get(
+      "SELECT rowid AS result_order,* FROM minesweeper_runs WHERE id=:id AND status='won'",
+      { ':id': id },
     );
-    const rows = returnedRows(result);
-    return rows.length === 1 ? decodeStored(rows[0]) : null;
+    if (value == null) return null;
+    const row = object(value);
+    const state = object(JSON.parse(text(row.state_json, 1, 20000)));
+    const socialProcessed = state.socialProcessed === undefined ? true : state.socialProcessed;
+    if (typeof socialProcessed !== 'boolean') throw new Error('Invalid notification state');
+    return {
+      ...decodeMineResult({ id: row.id, size: row.size, elapsedMs: row.elapsed_ms }),
+      playerId: integer(row.player_id, 1, Number.MAX_SAFE_INTEGER),
+      playerName: text(row.player_name, 1, 100),
+      createdAt: integer(row.started_at, 0, Number.MAX_SAFE_INTEGER),
+      order: integer(row.result_order, 1, Number.MAX_SAFE_INTEGER),
+      socialProcessed,
+    };
+  }
+  async pendingResults(limit: number): Promise<MineNotificationResult[]> {
+    const rows = await this.db.all(
+      "SELECT id FROM minesweeper_runs WHERE status='won' AND ruleset=:ruleset AND json_extract(state_json,'$.socialProcessed')=0 ORDER BY rowid LIMIT :limit",
+      { ':ruleset': MINE_RULESET, ':limit': limit },
+    );
+    if (!Array.isArray(rows)) throw new Error('Invalid notification results');
+    const results: MineNotificationResult[] = [];
+    for (const value of rows) {
+      const run = await this.getStored(text(object(value).id, 1, 100));
+      if (run) results.push(run);
+    }
+    return results;
+  }
+  async processed(id: string): Promise<void> {
+    await this.db.run(
+      "UPDATE minesweeper_runs SET state_json=json_set(state_json,'$.socialProcessed',json('true')) WHERE id=:id",
+      { ':id': id },
+    );
   }
   async countRecent(playerId: number, since: number): Promise<number> {
     const result = object(
@@ -144,18 +103,33 @@ export class SqlMineRepository implements MineRepository {
     size: MineSize,
     period: Period,
     since: number,
+    scope: MineBoardScope = {},
   ): Promise<MineLeaderboard> {
     const result = await this.db.all(
-      `WITH attempts AS (
+      `WITH results AS (
+        SELECT rowid AS result_order,* FROM minesweeper_runs
+        WHERE size=:size AND ruleset=:ruleset AND status='won' AND started_at>=:since
+      ), attempts AS (
         SELECT *,row_number() OVER (
           PARTITION BY player_id ORDER BY elapsed_ms ASC,started_at ASC,id ASC
-        ) AS personal FROM minesweeper_runs
-        WHERE size=:size AND ruleset=:ruleset AND status='won' AND started_at>=:since
+        ) AS personal FROM results
+        WHERE (:maxOrder IS NULL OR result_order<=:maxOrder)
+        AND (:groupId IS NULL OR EXISTS(SELECT 1 FROM group_memberships gm
+          WHERE gm.group_id=:groupId AND gm.user_id=results.player_id
+          AND gm.active=1 AND gm.updated_at>=:membersSince))
       ), ranked AS (
         SELECT *,row_number() OVER (ORDER BY elapsed_ms ASC,started_at ASC,id ASC) AS place
         FROM attempts WHERE personal=1
       ) SELECT * FROM ranked WHERE place<=50 OR player_id=:player ORDER BY place`,
-      { ':size': size, ':ruleset': MINE_RULESET, ':since': since, ':player': player.id },
+      {
+        ':size': size,
+        ':ruleset': MINE_RULESET,
+        ':since': since,
+        ':player': player.id,
+        ':maxOrder': scope.maxResultOrder ?? null,
+        ':groupId': scope.groupId ?? null,
+        ':membersSince': scope.membershipCheckedSince ?? 0,
+      },
     );
     if (!Array.isArray(result)) throw new Error('Invalid mine leaderboard');
     const entries = result.map((value) => {

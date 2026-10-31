@@ -31,6 +31,12 @@ it('supports diagonals, dead zones and deterministic direct-game routing', () =>
   expect(parseLaunch('game_mario')).toEqual({ view: 'catalog' });
   expect(parseLaunch('game_tetris')).toEqual({ view: 'game', game: 'tetris' });
   expect(parseLaunch('game_minesweeper')).toEqual({ view: 'game', game: 'minesweeper' });
+  for (const size of ['9x9', '16x16', '30x16'])
+    expect(parseLaunch(`game_minesweeper_${size}`)).toEqual({
+      view: 'game',
+      game: 'minesweeper',
+      size,
+    });
   expect(parseLaunch('game_tetris_sprint')).toEqual({
     view: 'game',
     game: 'tetris',

@@ -1,18 +1,15 @@
-import {
-  LEVELS,
-  MINE_LIMIT_MS,
-  type MineBoard,
-  type MineSize,
-  SIZES,
-} from '../games/minesweeper/engine.ts';
+import { MINE_LIMIT_MS, type MineSize, SIZES } from '../games/minesweeper/engine.ts';
 import type { Period } from './contracts.ts';
 import { AppError, integer, object, oneOf, text } from './errors.ts';
 
-export interface MineRunView {
+export interface MineResultInput {
+  requestId: string;
+  size: MineSize;
+  elapsedMs: number;
+}
+export interface MineResult {
   id: string;
-  revision: number;
-  board: MineBoard;
-  startedAt: number;
+  size: MineSize;
   elapsedMs: number;
 }
 export interface MineEntry {
@@ -28,22 +25,11 @@ export interface MineLeaderboard {
   entries: MineEntry[];
   me: MineEntry | null;
 }
-export function decodeMineRun(value: unknown): MineRunView {
+export function decodeMineResult(value: unknown): MineResult {
   const r = object(value);
-  const b = object(r.board);
-  const size = oneOf(b.size, SIZES);
-  const { width, height } = LEVELS[size];
-  if (!Array.isArray(b.cells) || b.cells.length !== width * height)
-    throw new AppError('BAD_INPUT', 'Некорректное поле сапёра');
   return {
     id: text(r.id, 1, 100),
-    revision: integer(r.revision, 0, 20000),
-    board: {
-      size,
-      status: oneOf(b.status, ['playing', 'won', 'lost']),
-      cells: b.cells.map((cell) => integer(cell, -3, 8)),
-    },
-    startedAt: integer(r.startedAt, 0, Number.MAX_SAFE_INTEGER),
+    size: oneOf(r.size, SIZES),
     elapsedMs: integer(r.elapsedMs, 0, MINE_LIMIT_MS),
   };
 }

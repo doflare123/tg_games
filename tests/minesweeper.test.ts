@@ -1,11 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { localRepository } from '../scripts/local-api.ts';
 import {
   actMines,
   createMines,
   LEVELS,
   MINE_LIMIT_MS,
-  MINE_RULESET,
   type MineState,
   mineBoard,
   neighbors,
@@ -13,7 +12,7 @@ import {
 } from '../src/games/minesweeper/engine.ts';
 import { MinesweeperService } from '../src/server/domain/minesweeper.ts';
 import { SqlMineRepository } from '../src/server/platform/sql-minesweeper.ts';
-import { decodeMineLeaderboard, decodeMineRun } from '../src/shared/minesweeper.ts';
+import { decodeMineLeaderboard, decodeMineResult } from '../src/shared/minesweeper.ts';
 
 describe('Minesweeper core', () => {
   it.each(SIZES)(
@@ -42,6 +41,28 @@ describe('Minesweeper core', () => {
     expect(neighbors('9x9', 0)).toEqual([1, 9, 10]);
     expect(neighbors('9x9', 8)).toEqual([7, 16, 17]);
   });
+  it.each(SIZES)('finishes %s on the last safe cell without requiring mine flags', (size) => {
+    for (const markedMines of [0, 3]) {
+      const state = createMines(size, 42, 0);
+      const last = state.cells.findIndex((value, i) => value > 0 && !state.revealed[i]);
+      expect(last).toBeGreaterThanOrEqual(0);
+      actMines(state, 'flag', last);
+      const mines = state.cells.flatMap((value, i) => (value === -1 ? [i] : []));
+      for (const cell of mines.slice(0, markedMines)) actMines(state, 'flag', cell);
+      for (let cell = 0; cell < state.cells.length; cell++)
+        if (cell !== last && state.cells[cell] !== -1) actMines(state, 'reveal', cell);
+      expect(state.status).toBe('playing');
+      actMines(state, 'flag', last);
+      expect(state.status).toBe('playing');
+      actMines(state, 'reveal', last);
+      expect(state.status).toBe('won');
+      expect(state.flags.filter(Boolean)).toHaveLength(LEVELS[size].mines);
+      for (const cell of mines) expect(state.revealed[cell]).toBe(false);
+      const board = mineBoard(state);
+      expect(board.cells.filter((value) => value === -3)).toHaveLength(LEVELS[size].mines);
+      expect(board.cells.some((value) => value === -1 || value === -2)).toBe(false);
+    }
+  });
   it('toggles flags, blocks flagged reveals and wins only by opening all safe cells', () => {
     const state = createMines('9x9', 42, 0);
     const safe = state.cells.findIndex((value, i) => value !== -1 && !state.revealed[i]);
@@ -53,7 +74,7 @@ describe('Minesweeper core', () => {
     for (let i = 0; i < state.cells.length; i++)
       if (state.cells[i] !== -1) actMines(state, 'reveal', i);
     expect(state.status).toBe('won');
-    expect(state.flags.some(Boolean)).toBe(false);
+    expect(state.flags).toEqual(state.cells.map((value) => value === -1));
     const finished = structuredClone(state);
     actMines(state, 'flag', 1);
     expect(state).toEqual(finished);
@@ -91,7 +112,6 @@ describe('Minesweeper core', () => {
 
 const handles: ReturnType<typeof localRepository>[] = [];
 afterEach(() => {
-  vi.restoreAllMocks();
   for (const handle of handles.splice(0)) handle.close();
 });
 function setup() {
@@ -99,9 +119,8 @@ function setup() {
   handles.push(local);
   const repository = new SqlMineRepository(local.db);
   let now = Date.UTC(2026, 9, 31, 12);
-  const service = new MinesweeperService(repository, { now: () => now, seed: () => 42 });
+  const service = new MinesweeperService(repository, { now: () => now });
   return {
-    now: () => now,
     database: local.database,
     repository,
     service,
@@ -111,337 +130,152 @@ function setup() {
     },
   };
 }
-const request = { size: '9x9', firstCell: 0, requestId: 'minesweeper_test_01' } as const;
-describe('Authoritative Minesweeper runs and SQL rankings', () => {
-  it('excludes slow generation, reads and primary saves from the final ranked time', async () => {
-    const { repository, player, advance, now } = setup();
-    const get = repository.get.bind(repository);
-    const create = repository.create.bind(repository);
-    const save = repository.save.bind(repository);
-    vi.spyOn(repository, 'get').mockImplementation(async (id) => {
-      advance(200);
-      return get(id);
-    });
-    vi.spyOn(repository, 'create').mockImplementation(async (run) => {
-      const result = await create(run);
-      advance(900);
-      return result;
-    });
-    vi.spyOn(repository, 'save').mockImplementation(async (run, revision) => {
-      const result = await save(run, revision);
-      advance(700);
-      return result;
-    });
-    const service = new MinesweeperService(repository, {
-      now,
-      seed: () => {
-        advance(400);
-        return 42;
-      },
-    });
-    let run = await service.create(player, request);
-    expect(run.elapsedMs).toBe(0);
-    const original = await get(run.id);
-    expect(original?.timing).toEqual({ runningSince: now(), pending: false });
-    const flagged = run.board.cells.indexOf(-2);
-    advance(800); // Thinking and network transit remain part of the result.
-    run = await service.move(player, {
-      runId: run.id,
-      revision: run.revision,
-      cell: flagged,
-      action: 'flag',
-      elapsedMs: 0,
-      processingMs: 999999,
-    });
-    expect(run.elapsedMs).toBe(800);
-    advance(400);
-    run = await service.move(player, {
-      runId: run.id,
-      revision: run.revision,
-      cell: flagged,
-      action: 'flag',
-    });
-    expect(run.elapsedMs).toBe(1200);
-    let expectedMs = 1200;
-    let winningInput:
-      | { runId: string; revision: number; cell: number; action: 'reveal' }
-      | undefined;
-    for (let cell = 0; cell < run.board.cells.length; cell++) {
-      if (original?.state.cells[cell] === -1 || (run.board.cells[cell] ?? 0) >= 0) continue;
-      advance(10);
-      expectedMs += 10;
-      winningInput = { runId: run.id, revision: run.revision, cell, action: 'reveal' };
-      run = await service.move(player, winningInput);
-    }
-    expect(run.board.status).toBe('won');
-    expect(run.elapsedMs).toBe(expectedMs);
-    expect(now() - run.startedAt).toBeGreaterThan(expectedMs + 2000);
-    advance(5000);
-    expect((await service.move(player, winningInput)).elapsedMs).toBe(expectedMs);
-    expect((await service.leaderboard(player, { size: '9x9', period: 'all' })).me?.elapsedMs).toBe(
-      expectedMs,
-    );
-  });
-  it('does not reset the clock on repeated starts or grant time for replayed requests', async () => {
-    const { service, repository, player, advance } = setup();
-    const run = await service.create(player, request);
-    const original = await repository.get(run.id);
-    advance(250);
-    expect((await service.create(player, request)).elapsedMs).toBe(250);
-    advance(500);
-    expect((await service.create(player, request)).elapsedMs).toBe(750);
-    expect((await repository.get(run.id))?.timing).toEqual(original?.timing);
-    const input = { runId: run.id, revision: 0, cell: run.board.cells.indexOf(-2), action: 'flag' };
-    expect((await service.move(player, input)).elapsedMs).toBe(750);
-    const accepted = await repository.get(run.id);
-    advance(1000);
-    expect((await service.move(player, input)).elapsedMs).toBe(1750);
-    expect(await repository.get(run.id)).toEqual(accepted);
-  });
-  it('recovers conservatively from a failed timing checkpoint and rejects late completion of an older move', async () => {
-    const { service, repository, player, advance, now } = setup();
-    const run = await service.create(player, request);
-    vi.spyOn(repository, 'resumeTimer').mockRejectedValueOnce(new Error('Timing write failed'));
-    const cell = run.board.cells.indexOf(-2);
-    const input = { runId: run.id, revision: 0, cell, action: 'flag' };
-    advance(100);
-    await expect(service.move(player, input)).rejects.toThrow('Timing write failed');
-    const pending = await repository.get(run.id);
-    expect(pending?.timing.pending).toBe(true);
-    advance(500);
-    expect((await service.move(player, input)).elapsedMs).toBe(600);
-    const current = await service.move(player, { ...input, revision: 1 });
-    expect(current.elapsedMs).toBe(600);
-    const stored = await repository.get(run.id);
-    if (!pending) throw new Error('Missing pending run');
-    expect(await repository.resumeTimer(pending, now() + 9000)).toBeNull();
-    expect(await repository.get(run.id)).toEqual(stored);
-    expect(stored?.timing.pending).toBe(false);
-  });
-  it('keeps a wall-clock expiry even when most of the attempt was spent processing', async () => {
-    const { service, repository, player, advance } = setup();
-    const run = await service.create(player, request);
-    const save = repository.save.bind(repository);
-    vi.spyOn(repository, 'save').mockImplementation(async (next, revision) => {
-      const result = await save(next, revision);
-      advance(MINE_LIMIT_MS);
-      return result;
-    });
-    advance(10);
-    const input = { runId: run.id, revision: 0, cell: run.board.cells.indexOf(-2), action: 'flag' };
-    expect((await service.move(player, input)).elapsedMs).toBe(10);
-    await expect(service.move(player, { ...input, revision: 1 })).rejects.toMatchObject({
-      code: 'EXPIRED',
-    });
-  });
-  it('preserves flags placed before the first reveal, including across retries and subsequent moves', async () => {
-    const { service, repository, player, advance } = setup();
-    const input = { ...request, flags: [10, 1] };
-    const run = await service.create(player, input);
-    expect(run.board.cells[0]).toBe(0);
-    expect(run.board.cells[1]).toBe(-3);
-    expect(run.board.cells[10]).toBe(-3);
-    expect((await repository.get(run.id))?.initialFlags).toEqual([1, 10]);
-    expect(await service.create(player, { ...input, flags: [1, 10] })).toEqual(run);
-    advance(1000);
-    const unflagged = await service.move(player, {
-      runId: run.id,
-      revision: 0,
-      action: 'flag',
-      cell: 1,
-    });
-    expect(unflagged.board.cells[1]).toBe(-2);
-    expect((await repository.get(run.id))?.initialFlags).toEqual([1, 10]);
-    expect(await service.create(player, input)).toEqual(unflagged);
-    await expect(service.create(player, { ...input, flags: [10] })).rejects.toMatchObject({
-      code: 'CONFLICT',
-    });
-    const opened = await service.move(player, {
-      runId: run.id,
-      revision: 1,
-      action: 'reveal',
-      cell: 1,
-    });
-    expect(opened.board.cells[1]).toBeGreaterThanOrEqual(0);
-  });
-  it('rejects malformed initial flags and continues legacy runs without flags or timing metadata', async () => {
-    const { service, repository, player, database, advance } = setup();
-    for (const flags of [null, '1', [0], [1, 1], [-1], [81], [0.5], ['1']])
-      await expect(service.create(player, { ...request, flags })).rejects.toMatchObject({
-        code: 'BAD_INPUT',
-      });
-    const run = await service.create(player, request);
-    database
-      .prepare(
-        "UPDATE minesweeper_runs SET state_json=json_remove(state_json,'$.initialFlags','$.timing'),elapsed_ms=500 WHERE id=?",
-      )
-      .run(run.id);
-    const stored = await repository.get(run.id);
-    expect(stored?.initialFlags).toEqual([]);
-    expect(stored?.timing).toEqual({ runningSince: run.startedAt + 500, pending: false });
-    advance(1000);
-    expect((await service.create(player, request)).elapsedMs).toBe(1000);
-    const continued = await service.move(player, {
-      runId: run.id,
-      revision: 0,
-      cell: run.board.cells.indexOf(-2),
-      action: 'flag',
-    });
-    expect(continued.elapsedMs).toBe(1000);
-    expect((await repository.get(run.id))?.timing.pending).toBe(false);
-  });
+const result = { size: '9x9', elapsedMs: 12345, requestId: 'minesweeper_test_01' } as const;
+describe('Minesweeper results and SQL rankings', () => {
   it.each(SIZES)(
-    'verifies %s victory using server time and ignores forged result fields',
+    'records %s time with the endpoint player identity in its own category',
     async (size) => {
-      const { service, repository, player, advance } = setup();
-      let run = await service.create(player, { ...request, size, playerId: 999 });
-      expect(decodeMineRun(run)).toEqual(run);
-      expect(run.id.startsWith('42:mine:')).toBe(true);
-      expect(JSON.stringify(run)).not.toMatch(/"seed"|"revealed"|"flags"/);
-      expect(run.board.cells.includes(-1)).toBe(false);
-      const stored = await repository.get(run.id);
-      expect(stored).not.toBeNull();
-      advance(12345);
-      for (let cell = 0; cell < run.board.cells.length; cell++) {
-        if (stored?.state.cells[cell] === -1 || (run.board.cells[cell] ?? 0) >= 0) continue;
-        run = await service.move(player, {
-          runId: run.id,
-          revision: run.revision,
-          cell,
-          action: 'reveal',
-          elapsedMs: 1,
-          status: 'won',
-        });
-      }
-      expect(run.board.status).toBe('won');
-      expect(run.elapsedMs).toBe(12345);
+      const { service, database, player } = setup();
+      const saved = await service.submit(player, {
+        ...result,
+        size,
+        playerId: 999,
+        playerName: 'Чужой',
+      });
+      expect(decodeMineResult(saved)).toEqual(saved);
+      expect(saved.elapsedMs).toBe(12345);
+      expect(saved.size).toBe(size);
+      const row = database
+        .prepare('SELECT player_id,player_name FROM minesweeper_runs WHERE id=?')
+        .get(saved.id);
+      expect(row).toEqual({ player_id: player.id, player_name: player.name });
       const board = await service.leaderboard(player, { size, period: 'all' });
       expect(decodeMineLeaderboard(board)).toEqual(board);
-      expect(board.me).toMatchObject({ rank: 1, elapsedMs: 12345, playerId: 42 });
+      expect(board.me).toMatchObject({ rank: 1, elapsedMs: 12345, playerId: player.id });
       for (const other of SIZES.filter((s) => s !== size))
         expect((await service.leaderboard(player, { size: other, period: 'all' })).entries).toEqual(
           [],
         );
     },
   );
-  it('excludes active and lost runs and retries without changing final time', async () => {
-    const { service, repository, player, advance } = setup();
-    const run = await service.create(player, request);
-    expect(await service.create(player, request)).toEqual(run);
-    expect((await service.leaderboard(player, { size: '9x9', period: 'all' })).me).toBeNull();
-    const stored = await repository.get(run.id);
-    const input = {
-      runId: run.id,
-      revision: 0,
-      action: 'reveal',
-      cell: stored?.state.cells.indexOf(-1),
-    };
-    advance(2000);
-    const lost = await service.move(player, input);
-    expect(lost.board.status).toBe('lost');
+  it('keeps results stable across retries, reloads and reused request keys', async () => {
+    const { service, repository, database, player, advance } = setup();
+    const saved = await service.submit(player, result);
     advance(5000);
-    expect(await service.move(player, input)).toEqual(lost);
-    expect((await service.leaderboard(player, { size: '9x9', period: 'all' })).me).toBeNull();
-    await expect(service.move(player, { ...input, revision: 1 })).rejects.toMatchObject({
+    expect(await service.submit(player, result)).toEqual(saved);
+    const restarted = new MinesweeperService(repository, { now: () => Date.UTC(2026, 10, 1) });
+    expect(await restarted.submit(player, result)).toEqual(saved);
+    expect(database.prepare('SELECT count(*) AS total FROM minesweeper_runs').get()?.total).toBe(1);
+    await expect(service.submit(player, { ...result, elapsedMs: 1 })).rejects.toMatchObject({
       code: 'CONFLICT',
     });
-    await expect(service.create(player, { ...request, firstCell: 1 })).rejects.toMatchObject({
+    await expect(service.submit(player, { ...result, size: '16x16' })).rejects.toMatchObject({
       code: 'CONFLICT',
     });
+    const other = await service.submit({ id: 99, name: 'Другой' }, result);
+    expect(other.id).not.toBe(saved.id);
   });
-  it('validates input, ownership, revisions, expiry and the start rate', async () => {
-    const { service, player, advance } = setup();
-    const run = await service.create(player, request);
-    const input = { runId: run.id, revision: 0, cell: 80, action: 'flag' };
-    await expect(service.move({ id: 99, name: 'Чужой' }, input)).rejects.toMatchObject({
-      code: 'NOT_FOUND',
-    });
-    for (const invalid of [
-      { action: 'win' },
-      { cell: 81 },
-      { cell: -1 },
-      { cell: 0.5 },
-      { revision: 1 },
-      { revision: '0' },
-    ])
-      await expect(service.move(player, { ...input, ...invalid })).rejects.toBeInstanceOf(Error);
-    for (const invalid of [{ size: '8x8' }, { firstCell: 81 }, { requestId: '../bad-path-key__' }])
-      await expect(service.create(player, { ...request, ...invalid })).rejects.toMatchObject({
+  it('accepts valid duration bounds and rejects malformed sizes, times and request keys', async () => {
+    const { service, player } = setup();
+    for (const elapsedMs of [-1, MINE_LIMIT_MS + 1, 0.1, NaN, Infinity, '123', null])
+      await expect(service.submit(player, { ...result, elapsedMs })).rejects.toMatchObject({
         code: 'BAD_INPUT',
       });
+    for (const invalid of [
+      { size: '8x8' },
+      { requestId: '../bad-path-key__' },
+      { requestId: 'short' },
+    ])
+      await expect(service.submit(player, { ...result, ...invalid })).rejects.toMatchObject({
+        code: 'BAD_INPUT',
+      });
+    await expect(service.submit(player, null)).rejects.toMatchObject({ code: 'BAD_INPUT' });
+    expect((await service.submit(player, { ...result, elapsedMs: 0 })).elapsedMs).toBe(0);
+    expect(
+      (
+        await service.submit(player, {
+          ...result,
+          requestId: 'minesweeper_test_02',
+          elapsedMs: MINE_LIMIT_MS,
+        })
+      ).elapsedMs,
+    ).toBe(MINE_LIMIT_MS);
     await expect(
       service.leaderboard(player, { size: '9x9', period: 'month' }),
     ).rejects.toMatchObject({ code: 'BAD_INPUT' });
-    for (let i = 1; i < 10; i++)
-      await service.create(player, { ...request, requestId: `start_limit_test_${i}` });
-    await expect(
-      service.create(player, { ...request, requestId: 'start_limit_test_10' }),
-    ).rejects.toMatchObject({ code: 'RATE_LIMIT' });
-    advance(MINE_LIMIT_MS);
-    await expect(service.move(player, input)).rejects.toMatchObject({ code: 'EXPIRED' });
   });
-  it('arbitrates concurrent moves and recovers retries after service restart', async () => {
-    const { service, repository, player } = setup();
-    const run = await service.create(player, request);
-    const input = { runId: run.id, revision: 0, cell: 80, action: 'flag' };
-    const results = await Promise.allSettled([
-      service.move(player, input),
-      service.move(player, input),
+  it('deduplicates concurrent submissions', async () => {
+    const { service, database, player } = setup();
+    const saved = await Promise.all([
+      service.submit(player, result),
+      service.submit(player, result),
     ]);
-    expect(results.some((r) => r.status === 'fulfilled')).toBe(true);
-    expect((await repository.get(run.id))?.revision).toBe(1);
-    const restarted = new MinesweeperService(repository, {
-      now: () => run.startedAt + 1000,
-      seed: () => 8,
-    });
-    expect((await restarted.move(player, input)).revision).toBe(1);
-    await expect(restarted.move(player, { ...input, cell: 79 })).rejects.toMatchObject({
-      code: 'CONFLICT',
-    });
+    expect(saved[0]).toEqual(saved[1]);
+    expect(database.prepare('SELECT count(*) AS total FROM minesweeper_runs').get()?.total).toBe(1);
   });
-  it('ranks personal best times with stable ties, week and ruleset filters, and own rank beyond 50', async () => {
-    const { repository, player } = setup();
-    const state = createMines('9x9', 42, 0);
-    for (let i = 0; i < state.cells.length; i++)
-      if (state.cells[i] !== -1) actMines(state, 'reveal', i);
-    async function insert(
-      id: string,
-      playerId: number,
-      elapsedMs: number,
-      startedAt: number,
-      ruleset = MINE_RULESET,
-    ) {
-      await repository.create({
+  it('limits new result submissions without blocking retries of accepted results', async () => {
+    const { service, player, advance } = setup();
+    for (let i = 0; i < 10; i++)
+      await service.submit(player, { ...result, requestId: `result_limit_test_${i}` });
+    await expect(service.submit(player, result)).rejects.toMatchObject({ code: 'RATE_LIMIT' });
+    expect(
+      (await service.submit(player, { ...result, requestId: 'result_limit_test_0' })).elapsedMs,
+    ).toBe(result.elapsedMs);
+    advance(60001);
+    expect((await service.submit(player, result)).elapsedMs).toBe(result.elapsedMs);
+  });
+  it('ranks personal bests, stable ties and week boundaries while preserving older results', async () => {
+    const { service, repository, database, player } = setup();
+    const monday = Date.UTC(2026, 9, 26);
+    async function insert(id: string, playerId: number, elapsedMs: number, createdAt: number) {
+      await repository.record({
         id,
         playerId,
         playerName: `P${playerId}`,
-        ruleset,
-        revision: 1,
-        state,
-        firstCell: 0,
-        initialFlags: [],
-        startedAt,
+        size: '9x9',
         elapsedMs,
-        timing: { runningSince: startedAt + elapsedMs, pending: false },
-        lastAction: null,
+        createdAt,
       });
     }
-    await insert('a', 1, 1000, 100);
-    await insert('b', 1, 500, 200);
-    await insert('c', 2, 500, 150);
-    await insert('d', 3, 500, 150);
-    await insert('oldrules', 4, 1, 500, 'obsolete');
+    await insert('a', 1, 1000, monday);
+    await insert('b', 1, 500, monday + 200);
+    await insert('c', 2, 500, monday + 100);
+    await insert('d', 3, 500, monday + 100);
+    await insert('prior-week', 4, 1, monday - 1);
+    database
+      .prepare('UPDATE minesweeper_runs SET state_json=? WHERE id=?')
+      .run(JSON.stringify(createMines('9x9', 42, 0)), 'c');
     expect(
-      (await repository.leaderboard(player, '9x9', 'all', 0)).entries.map((e) => e.runId),
+      (await service.leaderboard(player, { size: '9x9', period: 'all' })).entries.map(
+        (e) => e.runId,
+      ),
+    ).toEqual(['prior-week', 'c', 'd', 'b']);
+    expect(
+      (await service.leaderboard(player, { size: '9x9', period: 'week' })).entries.map(
+        (e) => e.runId,
+      ),
     ).toEqual(['c', 'd', 'b']);
+    database.prepare("UPDATE minesweeper_runs SET status='lost' WHERE id='d'").run();
     expect(
-      (await repository.leaderboard(player, '9x9', 'week', 200)).entries.map((e) => e.runId),
-    ).toEqual(['b']);
-    for (let i = 10; i <= 70; i++) await insert(`r${i}`, i, i * 1000, 1000);
-    const distant = await repository.leaderboard({ id: 70, name: 'P70' }, '9x9', 'all', 0);
-    expect(distant.entries).toHaveLength(50);
-    expect(distant.me?.rank).toBe(64);
-    expect(distant.entries.some((e) => e.playerId === 70)).toBe(false);
-    expect((await repository.leaderboard(player, '16x16', 'all', 0)).entries).toEqual([]);
+      (await service.leaderboard(player, { size: '9x9', period: 'week' })).entries.map(
+        (e) => e.runId,
+      ),
+    ).toEqual(['c', 'b']);
+  });
+  it('returns the player position beyond the first fifty', async () => {
+    const { repository } = setup();
+    for (let i = 1; i <= 60; i++)
+      await repository.record({
+        id: `r${i}`,
+        playerId: i,
+        playerName: `P${i}`,
+        size: '30x16',
+        elapsedMs: i * 1000,
+        createdAt: i,
+      });
+    const board = await repository.leaderboard({ id: 60, name: 'P60' }, '30x16', 'all', 0);
+    expect(board.entries).toHaveLength(50);
+    expect(board.me?.rank).toBe(60);
+    expect(board.entries.some((e) => e.playerId === 60)).toBe(false);
   });
 });

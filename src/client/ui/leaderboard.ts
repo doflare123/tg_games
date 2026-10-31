@@ -3,6 +3,9 @@ import type { GroupView } from '../../shared/groups.ts';
 import { api, hasApi } from '../platform/api.ts';
 import { button, element, errorMessage, formatTime } from './dom.ts';
 import { mountMineLeaderboard } from './mine-leaderboard.ts';
+
+// This single recovery was explicitly approved without a public label; its stored source stays manual.
+const OWNER_APPROVED_RECOVERY = 'manual:recovery:2026-10-31:930852883:marathon:89768';
 export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): () => void {
   const picker = element('select', 'select');
   picker.setAttribute('aria-label', 'Игра рейтинга');
@@ -186,7 +189,7 @@ function mountTetrisLeaderboard(host: HTMLElement, initialGroupId?: number): () 
         const row = element('tr', entry.playerId === board.me?.playerId ? 'own-record' : '');
         for (const value of [
           String(entry.rank).padStart(2, '0'),
-          `${entry.name}${entry.source === 'manual' ? ' · вручную' : ''}`,
+          `${entry.name}${entry.source === 'manual' && entry.runId !== OWNER_APPROVED_RECOVERY ? ' · вручную' : ''}`,
           board.mode === 'sprint'
             ? entry.durationKnown
               ? formatTime(entry.ticks)

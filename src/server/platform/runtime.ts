@@ -13,9 +13,9 @@ import { SqlArcadeRepository } from './sql-repository.ts';
 import { SqlSocialRepository } from './sql-social-repository.ts';
 import { telegramGateway } from './telegram-gateway.ts';
 export const repository = new SqlArcadeRepository(db);
-export const minesweeper = new MinesweeperService(new SqlMineRepository(db), {
+export const mineRepository = new SqlMineRepository(db);
+export const minesweeper = new MinesweeperService(mineRepository, {
   now: () => Date.now(),
-  seed: () => Math.floor(Math.random() * 0x100000000),
 });
 export const socialRepository = new SqlSocialRepository(db, repository);
 export const groups = new GroupService(socialRepository, telegramGateway, () => Date.now());
@@ -25,6 +25,7 @@ export const maintenance = new MaintenanceService(
   groups,
   telegramGateway,
   () => Date.now(),
+  mineRepository,
 );
 export const gameBot = new GameBotService(
   socialRepository,

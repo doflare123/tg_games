@@ -1,7 +1,7 @@
-import type { MineAction, MineSize } from '../games/minesweeper/engine.ts';
+import type { MineSize } from '../games/minesweeper/engine.ts';
 import type { ReplayEvent, TetrisMode, TetrisState } from '../games/tetris/types.ts';
 import type { GroupView } from './groups.ts';
-import type { MineLeaderboard, MineRunView } from './minesweeper.ts';
+import type { MineLeaderboard, MineResult, MineResultInput } from './minesweeper.ts';
 export interface Player {
   id: number;
   name: string;
@@ -67,13 +67,9 @@ export interface LeaderboardView {
   me: LeaderboardEntry | null;
 }
 export interface Endpoints {
-  createMineRun: {
-    input: { requestId: string; size: MineSize; firstCell: number; flags?: number[] };
-    output: MineRunView;
-  };
-  moveMineRun: {
-    input: { runId: string; revision: number; action: MineAction; cell: number };
-    output: MineRunView;
+  submitMineResult: {
+    input: MineResultInput;
+    output: MineResult;
   };
   getMineLeaderboard: {
     input: { size: MineSize; period: Period };

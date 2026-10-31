@@ -84,9 +84,15 @@ export function createLocalApi(file: string) {
     async commands() {},
   };
   const social = new SqlSocialRepository(local.db, local.repository);
+  const mineRepository = new SqlMineRepository(local.db);
   const groups = new GroupService(social, telegram, () => Date.now());
-  const maintenance = new MaintenanceService(social, local.repository, groups, telegram, () =>
-    Date.now(),
+  const maintenance = new MaintenanceService(
+    social,
+    local.repository,
+    groups,
+    telegram,
+    () => Date.now(),
+    mineRepository,
   );
   const ready = (async () => {
     await social.upsertGroup({
@@ -103,9 +109,8 @@ export function createLocalApi(file: string) {
     groups,
   );
   const player = { id: 1, name: 'Локальный игрок' };
-  const minesweeper = new MinesweeperService(new SqlMineRepository(local.db), {
+  const minesweeper = new MinesweeperService(mineRepository, {
     now: () => Date.now(),
-    seed: () => Math.floor(Math.random() * 0x100000000),
   });
   return {
     close: local.close,
@@ -132,11 +137,18 @@ export function createLocalApi(file: string) {
         const method = req.url?.split('?')[0]?.split('/').pop();
         let result: unknown;
         switch (method) {
-          case 'createMineRun':
-            result = await minesweeper.create(player, input);
-            break;
-          case 'moveMineRun':
-            result = await minesweeper.move(player, input);
+          case 'submitMineResult':
+            {
+              const outcome = await minesweeper.submit(player, input);
+              result = outcome;
+              try {
+                const run = await mineRepository.getStored(outcome.id);
+                if (run) await maintenance.mineResult(run);
+                await maintenance.sweep(3);
+              } catch {
+                // Delivery is retried by a later sweep; the result is already saved.
+              }
+            }
             break;
           case 'getMineLeaderboard':
             result = await minesweeper.leaderboard(player, input);

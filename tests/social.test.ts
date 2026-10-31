@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { localRepository } from '../scripts/local-api.ts';
+import { type MineSize, SIZES } from '../src/games/minesweeper/engine.ts';
 import { createTetris } from '../src/games/tetris/engine.ts';
 import type { TetrisMode } from '../src/games/tetris/types.ts';
 import { ArcadeService } from '../src/server/domain/arcade.ts';
@@ -7,13 +8,17 @@ import { type GAME_COMMANDS, GameBotService } from '../src/server/domain/bot.ts'
 import { GroupService } from '../src/server/domain/groups.ts';
 import { MaintenanceService } from '../src/server/domain/maintenance.ts';
 import { decodeManualResult } from '../src/server/domain/manual-result.ts';
+import { MinesweeperService } from '../src/server/domain/minesweeper.ts';
 import type { StoredRun } from '../src/server/domain/repository.ts';
 import type { SendMessage, TelegramGateway } from '../src/server/domain/telegram.ts';
 import { SqlManualResultRepository } from '../src/server/platform/sql-manual-results.ts';
+import { SqlMineRepository } from '../src/server/platform/sql-minesweeper.ts';
 import { SqlSocialRepository } from '../src/server/platform/sql-social-repository.ts';
+import { AppError } from '../src/shared/errors.ts';
 
 const handles: ReturnType<typeof localRepository>[] = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const h of handles.splice(0)) h.close();
 });
 async function setup() {
@@ -51,12 +56,15 @@ async function setup() {
     await repository.observeMember({ chatId: -100, userId, active: true, updatedAt: now });
   const groups = new GroupService(repository, telegram, () => now);
   const arcade = new ArcadeService(local.repository, { now: () => now, seed: () => 1 }, groups);
+  const mineRepository = new SqlMineRepository(local.db);
+  const minesweeper = new MinesweeperService(mineRepository, { now: () => now });
   const maintenance = new MaintenanceService(
     repository,
     local.repository,
     groups,
     telegram,
     () => now,
+    mineRepository,
   );
   const bot = new GameBotService(repository, groups, telegram, () => now, 'https://arcade.test/');
   async function verified(
@@ -103,6 +111,8 @@ async function setup() {
     repository,
     groups,
     arcade,
+    mineRepository,
+    minesweeper,
     maintenance,
     bot,
     telegram,
@@ -286,6 +296,204 @@ describe('historical results in a newly connected group', () => {
     });
     expect(recovered.membershipSync).toBe('complete');
     expect(recovered.entries.map((e) => e.playerId)).toEqual([2, 1]);
+  });
+});
+
+async function mineResult(
+  s: Awaited<ReturnType<typeof setup>>,
+  id: string,
+  playerId: number,
+  elapsedMs: number,
+  size: MineSize = '9x9',
+) {
+  const result = await s.minesweeper.submit(
+    { id: playerId, name: `P${playerId}` },
+    {
+      requestId: `notice_${id.padEnd(16, '_')}`,
+      size,
+      elapsedMs,
+    },
+  );
+  const run = await s.mineRepository.getStored(result.id);
+  if (!run) throw new Error('Missing mine result');
+  return run;
+}
+
+describe('Minesweeper record announcements', () => {
+  it.each(SIZES)('announces %s once and opens the matching difficulty', async (size) => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    s.advance(1);
+    const run = await mineResult(s, 'first', 1, 30000, size);
+    expect((await s.mineRepository.pendingResults(3)).map((r) => r.id)).toEqual([run.id]);
+    await s.maintenance.mineResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain(`Сапёр · ${size.replace('x', '×')}`);
+    expect(s.sent[0]?.text).toContain('30,000 с');
+    expect(s.sent[0]?.text).toContain('Первый рекорд группы');
+    expect(s.sent[0]?.reply_markup?.inline_keyboard[0]?.[0]).toEqual({
+      text: '🎮 Побить рекорд',
+      url: `https://t.me/arcade_bot?startapp=game_minesweeper_${size}`,
+    });
+    await s.maintenance.mineResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(await s.mineRepository.pendingResults(3)).toEqual([]);
+    expect((await s.mineRepository.getStored(run.id))?.socialProcessed).toBe(true);
+  });
+  it('compares group times, ignores outsiders and announces a leader improving their record', async () => {
+    const s = await setup();
+    await mineResult(s, 'rival', 2, 45000);
+    await mineResult(s, 'outsider', 3, 1000);
+    s.members.set(3, { active: false, admin: false });
+    await s.repository.observeMember({
+      chatId: -100,
+      userId: 3,
+      active: false,
+      updatedAt: s.now(),
+    });
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    s.advance(1);
+    await s.maintenance.mineResult(await mineResult(s, 'overtake', 1, 30000));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('быстрее на 15,000 с');
+    expect(s.sent[0]?.text).toContain('P2');
+    expect(
+      (await s.minesweeper.leaderboard(s.player, { size: '9x9', period: 'all' })).me?.rank,
+    ).toBe(2);
+    s.advance(300001);
+    await s.maintenance.mineResult(await mineResult(s, 'improved', 1, 25000));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(2);
+    expect(s.sent[1]?.text).toContain('Улучшен рекорд группы');
+    expect(s.sent[1]?.text).toContain('быстрее на 5,000 с');
+  });
+  it('does not announce personal improvements at the same non-leading rank', async () => {
+    const s = await setup();
+    await mineResult(s, 'leader', 2, 10000);
+    await mineResult(s, 'second', 1, 50000);
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    s.advance(1);
+    await s.maintenance.mineResult(await mineResult(s, 'same-rank', 1, 30000));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+  });
+  it('keeps chronological rank snapshots and suppresses superseded records', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    s.advance(1);
+    await mineResult(s, 'rival', 2, 50000);
+    const a = await mineResult(s, 'a', 1, 40000);
+    const b = await mineResult(s, 'b', 3, 30000);
+    const before = await s.mineRepository.leaderboard(s.player, '9x9', 'all', 0, {
+      groupId: -100,
+      maxResultOrder: a.order - 1,
+    });
+    const after = await s.mineRepository.leaderboard(s.player, '9x9', 'all', 0, {
+      groupId: -100,
+      maxResultOrder: a.order,
+    });
+    expect(before.me).toBeNull();
+    expect(after.me?.rank).toBe(1);
+    expect(after.entries.some((entry) => entry.playerId === 3)).toBe(false);
+    await s.maintenance.mineResult(a);
+    await s.maintenance.mineResult(b);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('P3');
+    expect(s.sent[0]?.text).toContain('быстрее на 10,000 с');
+  });
+  it('recovers an unprocessed result after restart and retries Telegram rate limits', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    s.advance(1);
+    await mineResult(s, 'pending', 1, 30000);
+    const restarted = new MaintenanceService(
+      s.repository,
+      s.local.repository,
+      s.groups,
+      s.telegram,
+      s.now,
+      s.mineRepository,
+    );
+    const send = s.telegram.send;
+    let attempts = 0;
+    s.telegram.send = async (message) => {
+      attempts++;
+      if (attempts === 1)
+        throw Object.assign(new Error('Rate limited'), {
+          code: 429,
+          parameters: { retry_after: 3 },
+        });
+      return send(message);
+    };
+    await restarted.sweep();
+    expect(s.sent).toHaveLength(0);
+    s.advance(3001);
+    await restarted.sweep();
+    expect(s.sent).toHaveLength(1);
+  });
+  it('leaves existing results without notification metadata silent', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    s.advance(1);
+    const run = await mineResult(s, 'legacy', 1, 30000);
+    s.local.database
+      .prepare(
+        "UPDATE minesweeper_runs SET state_json=json_remove(state_json,'$.socialProcessed') WHERE id=?",
+      )
+      .run(run.id);
+    expect((await s.mineRepository.getStored(run.id))?.socialProcessed).toBe(true);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+  });
+  it('suppresses delivery after leaving the group or switching notifications off', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    s.advance(1);
+    await s.maintenance.mineResult(await mineResult(s, 'queued', 1, 30000));
+    s.members.set(1, { active: false, admin: false });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    s.members.set(1, { active: true, admin: true });
+    s.advance(1);
+    await s.maintenance.mineResult(await mineResult(s, 'another', 1, 20000));
+    await s.groups.configure(s.player, { groupId: -100, enabled: false });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+  });
+});
+
+describe('record announcement recovery', () => {
+  it('announces a new Tetris record even if its start snapshot was empty', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    s.advance(1);
+    await s.maintenance.result(await s.verified('empty-snapshot', 1, 200, []));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('Тетрис');
+  });
+  it('keeps processing other results when one record is temporarily unavailable', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    s.advance(1);
+    await s.verified('unavailable', 1, 200, []);
+    await mineResult(s, 'available', 2, 30000);
+    const access = s.groups.access.bind(s.groups);
+    vi.spyOn(s.groups, 'access').mockImplementation(async (player, id, admin) => {
+      if (player.id === 1) throw new AppError('UNAVAILABLE', 'Temporary membership failure');
+      return access(player, id, admin);
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect((await s.maintenance.sweep()).deferred).toBe(1);
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('Сапёр');
+    expect((await s.local.repository.get('unavailable'))?.socialProcessed).toBe(false);
   });
 });
 

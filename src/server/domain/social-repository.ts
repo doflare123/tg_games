@@ -2,6 +2,7 @@ import type { GroupRecord, Membership } from '../../shared/groups.ts';
 import type { StoredRun } from './repository.ts';
 export interface JobPayload {
   type: 'record';
+  game?: 'tetris' | 'minesweeper';
   chatId: number;
   playerId: number;
   mode: string;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { access, mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { createMines } from '../src/games/minesweeper/engine.ts';
 import { createTetris } from '../src/games/tetris/engine.ts';
 import type { TetrisState } from '../src/games/tetris/types.ts';
 import { CATALOG } from '../src/shared/contracts.ts';
@@ -125,65 +126,123 @@ try {
   assert.equal(await page.locator('.mine-cell[data-value="-3"]').count(), 0);
   await page.screenshot({ path: '.cache/screenshots/minesweeper.png', fullPage: true });
   if (!production) {
-    await page.getByRole('button', { name: 'Рейтинговая игра', exact: true }).click();
-    let releaseMineCreate: (() => void) | undefined;
-    const mineCreateGate = new Promise<void>((resolve) => {
-      releaseMineCreate = resolve;
+    await page.evaluate(() => {
+      Reflect.set(window, '__mineOriginalNow', performance.now.bind(performance));
+      Reflect.set(window, '__mineClock', 1000);
+      performance.now = () => Number(Reflect.get(window, '__mineClock'));
+      Object.defineProperty(crypto, 'getRandomValues', {
+        configurable: true,
+        value: (array: Uint32Array) => {
+          array[0] = 42;
+          return array;
+        },
+      });
     });
-    await page.route('**/__dev/rpc/createMineRun', async (route) => {
-      await mineCreateGate;
-      await route.continue();
+    const mineRequests: string[] = [];
+    page.on('request', (request) => {
+      const endpoint = new URL(request.url()).pathname.split('/').pop() ?? '';
+      if (['createMineRun', 'moveMineRun', 'submitMineResult'].includes(endpoint))
+        mineRequests.push(endpoint);
     });
-    await page.locator('.mine-cell').first().click();
-    const pendingCreateTime = await page.locator('.mine-timer').textContent();
-    await page.waitForTimeout(650);
-    assert.equal(
-      await page.locator('.mine-timer').textContent(),
-      pendingCreateTime,
-      'The ranked timer must freeze while creating the board',
-    );
-    releaseMineCreate?.();
-    await page
-      .getByText('Рейтинговая партия · открой все клетки без мин.', { exact: true })
-      .waitFor();
-    await page.unroute('**/__dev/rpc/createMineRun');
-    let failMove = true;
-    let releaseMineMove: (() => void) | undefined;
-    const mineMoveGate = new Promise<void>((resolve) => {
-      releaseMineMove = resolve;
+    let releaseMineResult: (() => void) | undefined;
+    const mineResultGate = new Promise<void>((resolve) => {
+      releaseMineResult = resolve;
     });
-    await page.route('**/__dev/rpc/moveMineRun', async (route) => {
-      if (failMove) {
-        failMove = false;
+    let resultAttempts = 0;
+    await page.route('**/__dev/rpc/submitMineResult', async (route) => {
+      resultAttempts++;
+      const reported: unknown = route.request().postDataJSON();
+      assert.ok(reported && typeof reported === 'object' && 'elapsedMs' in reported);
+      assert.equal(reported.elapsedMs, 30000);
+      if (resultAttempts === 1) {
+        // Simulate a lost response after the result has already been saved.
+        const response = await route.fetch();
+        assert.equal(response.status(), 200);
         await route.abort();
       } else {
-        await mineMoveGate;
+        await mineResultGate;
         await route.continue();
       }
     });
-    await page.locator('.mine-cell[data-value="-2"]').first().click({ button: 'right' });
-    await page.getByRole('button', { name: 'Повторить ход', exact: true }).waitFor();
-    const failedTime = await page.locator('.mine-timer').textContent();
-    await page.waitForTimeout(150);
-    assert.notEqual(
-      await page.locator('.mine-timer').textContent(),
-      failedTime,
-      'A failed request must not leave the timer paused indefinitely',
-    );
-    await page.getByRole('button', { name: 'Повторить ход', exact: true }).click();
-    const pendingMoveTime = await page.locator('.mine-timer').textContent();
-    await page.waitForTimeout(650);
-    assert.equal(
-      await page.locator('.mine-timer').textContent(),
-      pendingMoveTime,
-      'The ranked timer must freeze while waiting for a move result',
-    );
-    releaseMineMove?.();
+    await page.getByRole('button', { name: 'Рейтинговая игра', exact: true }).click();
+    await page.locator('.mine-cell').first().click();
     await page
       .getByText('Рейтинговая партия · открой все клетки без мин.', { exact: true })
       .waitFor();
+    await page.evaluate(() => {
+      Reflect.set(window, '__mineClock', 31000);
+    });
+    await page.waitForTimeout(80);
+    assert.equal(await page.locator('.mine-timer').textContent(), '00:30.00');
+    const flagCell = await page
+      .locator('.mine-cell[data-value="-2"]')
+      .first()
+      .getAttribute('data-cell');
+    const flagTarget = page.locator(`.mine-cell[data-cell="${flagCell}"]`);
+    for (let i = 0; i < 5; i++) {
+      await flagTarget.click({ button: 'right' });
+      await page.locator('.mine-cell').first().click();
+      assert.equal(
+        await page.locator('.mine-timer').textContent(),
+        '00:30.00',
+        'Clicks must not add elapsed time',
+      );
+      assert.equal(await flagTarget.getAttribute('data-value'), i % 2 === 0 ? '-3' : '-2');
+    }
+    await flagTarget.click({ button: 'right' });
+    assert.deepEqual(mineRequests, [], 'Playing and flagging must not send requests');
+    const mineSolution = createMines('9x9', 42, 0);
+    for (let cell = 0; cell < mineSolution.cells.length; cell++) {
+      if (mineSolution.cells[cell] === -1) continue;
+      const target = page.locator(`.mine-cell[data-cell="${cell}"]`);
+      if (Number(await target.getAttribute('data-value')) === -2) await target.click();
+    }
+    await page.getByRole('button', { name: 'Повторить сохранение', exact: true }).waitFor();
+    assert.match((await page.locator('.mine-status').textContent()) ?? '', /^Победа!/);
+    assert.equal(await page.locator('.mine-hud strong').textContent(), '⚑ 0');
+    assert.equal(await page.locator('.mine-cell[data-value="-3"]').count(), 10);
+    assert.equal(await page.locator('.mine-cell[data-value="-2"]').count(), 0);
+    await page.evaluate(() => {
+      Reflect.set(window, '__mineClock', 91000);
+    });
+    await page.waitForTimeout(80);
+    assert.equal(await page.locator('.mine-timer').textContent(), '00:30.00');
+    await page.getByRole('button', { name: 'Повторить сохранение', exact: true }).click();
+    await page.waitForTimeout(650);
+    assert.equal(
+      await page.locator('.mine-timer').textContent(),
+      '00:30.00',
+      'Saving or retrying must not change the finishing time',
+    );
+    await page.getByRole('button', { name: 'Новая партия', exact: true }).click();
+    assert.equal(await page.locator('.mine-timer').textContent(), '00:00.00');
+    await page.locator('.mine-cell').first().click();
+    await page.locator('.mine-cell[data-value="-2"]').first().click({ button: 'right' });
+    const pendingResponse = page.waitForResponse((response) =>
+      response.url().endsWith('/submitMineResult'),
+    );
+    releaseMineResult?.();
+    await pendingResponse;
+    await page.evaluate(() => {
+      Reflect.set(window, '__mineClock', 95000);
+    });
+    await page.waitForTimeout(80);
+    assert.equal(
+      await page.locator('.mine-timer').textContent(),
+      '00:04.00',
+      'A previous result response must not change the new timer',
+    );
     assert.equal(await page.locator('.mine-cell[data-value="-3"]').count(), 1);
-    await page.unroute('**/__dev/rpc/moveMineRun');
+    assert.equal(
+      await page.locator('.mine-status').textContent(),
+      'Рейтинговая партия · открой все клетки без мин.',
+    );
+    assert.deepEqual(mineRequests, ['submitMineResult', 'submitMineResult']);
+    await page.unroute('**/__dev/rpc/submitMineResult');
+    await page.evaluate(() => {
+      performance.now = Reflect.get(window, '__mineOriginalNow') as () => number;
+      Reflect.deleteProperty(crypto, 'getRandomValues');
+    });
   } else
     assert.equal(
       await page.getByRole('button', { name: 'Рейтинговая игра', exact: true }).isDisabled(),
@@ -196,12 +255,18 @@ try {
   for (const size of ['9x9', '16x16', '30x16']) {
     const response = production
       ? null
-      : page.waitForResponse((response) => response.url().endsWith('/getMineLeaderboard'));
+      : page.waitForResponse((response) => {
+          if (!response.url().endsWith('/getMineLeaderboard')) return false;
+          const input: unknown = response.request().postDataJSON();
+          return (
+            input !== null && typeof input === 'object' && 'size' in input && input.size === size
+          );
+        });
     await page.getByLabel('Уровень рейтинга сапёра', { exact: true }).selectOption(size);
     if (response) {
       const board = await (await response).json();
       assert.equal(board.result.size, size);
-      assert.deepEqual(board.result.entries, []);
+      if (size === '9x9') assert.ok(board.result.me?.elapsedMs <= 30000);
     }
   }
   await page.getByRole('button', { name: 'Игры', exact: true }).click();
@@ -843,6 +908,16 @@ try {
     await phone.evaluate(() => document.documentElement.scrollWidth > innerWidth),
     false,
   );
+  for (const [size, count] of [
+    ['9x9', 81],
+    ['16x16', 256],
+    ['30x16', 480],
+  ] as const) {
+    await phone.goto(`http://127.0.0.1:4173/?startapp=game_minesweeper_${size}`);
+    await phone.locator('.mine-grid').waitFor();
+    assert.equal(await phone.getByLabel('Уровень сапёра', { exact: true }).inputValue(), size);
+    assert.equal(await phone.locator('.mine-cell').count(), count);
+  }
   await phoneContext.close();
 
   assert.deepEqual(errors, [], 'Browser runtime errors');

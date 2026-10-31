@@ -1,10 +1,14 @@
+import { type MineSize, SIZES } from '../games/minesweeper/engine.ts';
 import { MODES, type TetrisMode } from '../games/tetris/types.ts';
 import { CATALOG, type GameInfo } from './contracts.ts';
 export type LaunchTarget =
   | { view: 'catalog' }
-  | { view: 'game'; game: GameInfo['id']; mode?: TetrisMode }
+  | { view: 'game'; game: GameInfo['id']; mode?: TetrisMode; size?: MineSize }
   | { view: 'leaderboard'; groupId?: number };
 export function parseLaunch(value: unknown): LaunchTarget {
+  const size = SIZES.find((size) => value === `game_minesweeper_${size}`);
+  if (size && CATALOG.some((game) => game.id === 'minesweeper' && game.available))
+    return { view: 'game', game: 'minesweeper', size };
   const mode = MODES.find((mode) => value === `game_tetris_${mode}`);
   if (mode && CATALOG.some((game) => game.id === 'tetris' && game.available))
     return { view: 'game', game: 'tetris', mode };

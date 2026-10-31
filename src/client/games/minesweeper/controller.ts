@@ -10,14 +10,15 @@ import {
   mineBoard,
   SIZES,
 } from '../../../games/minesweeper/engine.ts';
-import type { MineRunView } from '../../../shared/minesweeper.ts';
+import type { MineResultInput } from '../../../shared/minesweeper.ts';
 import { api, hasApi } from '../../platform/api.ts';
 import { button, element, errorMessage, formatMineTime } from '../../ui/dom.ts';
 import type { GameAdapter, GameHost } from '../adapter.ts';
 import { mountMineInput } from './input.ts';
+import { MineTimer } from './timer.ts';
 import './minesweeper.css';
 
-export function mountMinesweeper(host: GameHost): GameAdapter {
+export function mountMinesweeper(host: GameHost, initialSize: MineSize = '9x9'): GameAdapter {
   const shell = element('section', 'minesweeper');
   const controls = element('div', 'mine-controls');
   const sizeSelect = element('select', 'select');
@@ -27,6 +28,7 @@ export function mountMinesweeper(host: GameHost): GameAdapter {
     option.value = size;
     sizeSelect.append(option);
   }
+  sizeSelect.value = initialSize;
   const rankedButton = button('Рейтинговая игра', () => reset(true), 'button primary');
   rankedButton.disabled = !hasApi;
   const practiceButton = button('Свободная игра', () => reset(false), 'button secondary');
@@ -47,7 +49,7 @@ export function mountMinesweeper(host: GameHost): GameAdapter {
   const status = element('p', 'mine-status');
   status.setAttribute('role', 'status');
   const retry = button(
-    'Повторить ход',
+    'Повторить сохранение',
     () => {
       void send();
     },
@@ -57,12 +59,12 @@ export function mountMinesweeper(host: GameHost): GameAdapter {
   const rules = element(
     'p',
     'control-hint',
-    'Открой все клетки без мин. Первый ход и соседние клетки безопасны. Компьютер: ЛКМ — открыть, ПКМ или F — поставить/убрать флаг. Телефон: тап — открыть, удержание 0,5 с — поставить/убрать флаг. Нажатие на число открывает соседей, если вокруг достаточно флагов. Большие поля можно прокручивать.',
+    'Открой все клетки без мин — и победа. Отмечать оставшиеся мины не обязательно. Первый ход и соседние клетки безопасны. Компьютер: ЛКМ — открыть, ПКМ или F — поставить/убрать флаг. Телефон: тап — открыть, удержание 0,5 с — поставить/убрать флаг. Нажатие на число открывает соседей, если вокруг достаточно флагов. Большие поля можно прокручивать.',
   );
   const rankingNote = element(
     'p',
     'control-hint',
-    'Для каждого размера — отдельный рейтинг времени. В зачёт идут только победы. Серверный расчёт ходов вычитается из времени; задержка сети учитывается. В рейтинговой игре нет ручной паузы. Лимит партии — 60 минут.',
+    'Для каждого размера — отдельный рейтинг времени. В зачёт идут только победы. В рейтинговой игре нет ручной паузы. Лимит партии — 60 минут.',
   );
   shell.append(controls, hud, scroll, status, retry, rules, rankingNote);
   host.container.replaceChildren(shell);
@@ -70,25 +72,24 @@ export function mountMinesweeper(host: GameHost): GameAdapter {
   let ranked = hasApi;
   let board: MineBoard;
   let local: MineState | null = null;
-  let run: MineRunView | null = null;
-  let pending: (() => Promise<MineRunView>) | null = null;
-  let busy = false;
+  let pending: MineResultInput | null = null;
+  let saving = false;
+  let saveMessage = '';
   let disposed = false;
   let epoch = 0;
   let requestId = '';
   let firstCell: number | null = null;
-  let baseMs = 0;
-  let anchoredAt = 0;
+  const clock = new MineTimer();
   let cells: HTMLButtonElement[] = [];
   const input = mountMineInput(grid, {
-    enabled: () => !disposed && !busy && pending === null && board.status === 'playing',
+    enabled: () => !disposed && board.status === 'playing',
     action: (cell, action) => {
       void play(cell, action);
     },
   });
 
   function elapsed(): number {
-    return Math.min(MINE_LIMIT_MS, baseMs + (anchoredAt ? performance.now() - anchoredAt : 0));
+    return clock.elapsedMs();
   }
   function reset(nextRanked: boolean): void {
     input.reset();
@@ -97,12 +98,11 @@ export function mountMinesweeper(host: GameHost): GameAdapter {
     size = SIZES.find((s) => s === sizeSelect.value) ?? '9x9';
     const { width, height } = LEVELS[size];
     local = null;
-    run = null;
     pending = null;
-    busy = false;
+    saving = false;
+    saveMessage = '';
     firstCell = null;
-    baseMs = 0;
-    anchoredAt = 0;
+    clock.reset();
     requestId = crypto.randomUUID();
     board = { size, status: 'playing', cells: Array<number>(width * height).fill(-2) };
     grid.style.gridTemplateColumns = `repeat(${width}, var(--mine-cell))`;
@@ -137,13 +137,14 @@ export function mountMinesweeper(host: GameHost): GameAdapter {
     const { width, mines } = LEVELS[size];
     remaining.textContent = `⚑ ${mines - board.cells.filter((c) => c === -3).length}`;
     timer.textContent = formatMineTime(elapsed());
-    grid.setAttribute('aria-busy', String(busy));
     cells.forEach((node, i) => {
       const value = board.cells[i] ?? -2;
+      const disabled = board.status !== 'playing';
+      if (node.dataset.value === String(value) && node.disabled === disabled) return;
       node.textContent = value === -3 ? '⚑' : value === -1 ? '✹' : value > 0 ? String(value) : '';
       node.className = `mine-cell ${value >= 0 ? 'revealed' : ''} ${value === -1 ? 'mine-hit' : ''}`;
       node.dataset.value = String(value);
-      node.disabled = busy || pending !== null || board.status !== 'playing';
+      node.disabled = disabled;
       const description =
         value === -3
           ? 'флаг'
@@ -159,49 +160,39 @@ export function mountMinesweeper(host: GameHost): GameAdapter {
         `Строка ${Math.floor(i / width) + 1}, столбец ${(i % width) + 1}: ${description}`,
       );
     });
-    retry.hidden = busy || pending === null;
+    retry.hidden = saving || pending === null;
     if (board.status !== 'playing') {
       status.textContent =
         board.status === 'won'
-          ? `Победа! ${formatMineTime(baseMs)}. ${ranked ? 'Результат сохранён в рейтинг этого уровня.' : 'Свободная игра — без записи в рейтинг.'}`
+          ? `Победа! ${formatMineTime(elapsed())}. ${ranked ? saveMessage : 'Свободная игра — без записи в рейтинг.'}`
           : 'Мина! Партия завершена. Попробуй ещё раз.';
     }
   }
   async function send(): Promise<void> {
-    if (!pending || busy || disposed) return;
+    if (!pending || saving || disposed) return;
     const current = epoch;
-    const operation = pending;
-    const sentAt = performance.now();
-    baseMs = elapsed();
-    anchoredAt = 0;
-    busy = true;
-    status.textContent = 'Проверяем ход…';
+    const result = pending;
+    saving = true;
+    saveMessage = 'Сохраняем результат…';
     render();
     try {
-      const result = await operation();
+      await api.submitMine(result);
       if (disposed || current !== epoch) return;
-      run = result;
-      board = result.board;
-      baseMs = result.elapsedMs;
-      anchoredAt = board.status === 'playing' ? performance.now() : 0;
       pending = null;
-      status.textContent = 'Рейтинговая партия · открой все клетки без мин.';
+      saveMessage = 'Результат сохранён в рейтинг этого уровня.';
     } catch (error) {
       if (disposed || current !== epoch) return;
-      // An unconfirmed request cannot grant free time: the server may have
-      // accepted it already, or may never have received it. Reconcile on retry.
-      baseMs += performance.now() - sentAt;
-      anchoredAt = performance.now();
-      status.textContent = `${errorMessage(error)} Повтори ход или начни новую партию. Таймер продолжает идти.`;
+      saveMessage = `${errorMessage(error)} Повтори сохранение результата.`;
     } finally {
       if (!disposed && current === epoch) {
-        busy = false;
+        saving = false;
         render();
       }
     }
   }
-  async function play(cell: number, action: MineAction): Promise<void> {
-    if (busy || pending || disposed || board.status !== 'playing') return;
+  function play(cell: number, action: MineAction): void {
+    if (disposed || board.status !== 'playing') return;
+    const actionAt = performance.now();
     const value = board.cells[cell] ?? -2;
     if (action === 'reveal' && value === -3) return;
     if (action === 'flag' && value >= 0) return;
@@ -213,52 +204,29 @@ export function mountMinesweeper(host: GameHost): GameAdapter {
         return;
       }
       firstCell = cell;
-      anchoredAt = performance.now();
+      clock.start(actionAt);
     }
-    if (elapsed() >= MINE_LIMIT_MS) {
+    if (clock.elapsedMs(actionAt) >= MINE_LIMIT_MS) {
       status.textContent = 'Время партии истекло. Начни новую партию.';
       return;
     }
-    if (ranked) {
-      const currentRun = run;
-      const initialCell = firstCell;
-      const initialRequest = requestId;
-      const initialSize = size;
-      const initialFlags = board.cells.flatMap((value, i) => (value === -3 ? [i] : []));
-      const move = action;
-      pending = currentRun
-        ? () =>
-            api.moveMine({
-              runId: currentRun.id,
-              revision: currentRun.revision,
-              action: move,
-              cell,
-            })
-        : () =>
-            api.createMine({
-              size: initialSize,
-              requestId: initialRequest,
-              firstCell: initialCell,
-              flags: initialFlags,
-            });
-      await send();
-    } else {
-      if (!local)
-        local = createMines(
-          size,
-          crypto.getRandomValues(new Uint32Array(1))[0] ?? 1,
-          firstCell,
-          board.cells.flatMap((value, i) => (value === -3 ? [i] : [])),
-        );
-      else actMines(local, action, cell);
-      board = mineBoard(local);
-      status.textContent = 'Свободная партия · открой все клетки без мин.';
-      if (board.status !== 'playing') {
-        baseMs = elapsed();
-        anchoredAt = 0;
-      }
-      render();
+    if (!local)
+      local = createMines(
+        size,
+        crypto.getRandomValues(new Uint32Array(1))[0] ?? 1,
+        firstCell,
+        board.cells.flatMap((value, i) => (value === -3 ? [i] : [])),
+      );
+    else actMines(local, action, cell);
+    board = mineBoard(local);
+    if (board.status !== 'playing') clock.finish(actionAt);
+    status.textContent = `${ranked ? 'Рейтинговая' : 'Свободная'} партия · открой все клетки без мин.`;
+    if (board.status === 'won' && ranked) {
+      pending = { requestId, size, elapsedMs: elapsed() };
+      saveMessage = 'Сохраняем результат…';
     }
+    render();
+    if (pending) void send();
   }
   sizeSelect.addEventListener('change', () => reset(ranked));
   reset(ranked);

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { localRepository } from '../scripts/local-api.ts';
 import {
   actMines,
@@ -91,6 +91,7 @@ describe('Minesweeper core', () => {
 
 const handles: ReturnType<typeof localRepository>[] = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const handle of handles.splice(0)) handle.close();
 });
 function setup() {
@@ -100,6 +101,7 @@ function setup() {
   let now = Date.UTC(2026, 9, 31, 12);
   const service = new MinesweeperService(repository, { now: () => now, seed: () => 42 });
   return {
+    now: () => now,
     database: local.database,
     repository,
     service,
@@ -111,6 +113,127 @@ function setup() {
 }
 const request = { size: '9x9', firstCell: 0, requestId: 'minesweeper_test_01' } as const;
 describe('Authoritative Minesweeper runs and SQL rankings', () => {
+  it('excludes slow generation, reads and primary saves from the final ranked time', async () => {
+    const { repository, player, advance, now } = setup();
+    const get = repository.get.bind(repository);
+    const create = repository.create.bind(repository);
+    const save = repository.save.bind(repository);
+    vi.spyOn(repository, 'get').mockImplementation(async (id) => {
+      advance(200);
+      return get(id);
+    });
+    vi.spyOn(repository, 'create').mockImplementation(async (run) => {
+      const result = await create(run);
+      advance(900);
+      return result;
+    });
+    vi.spyOn(repository, 'save').mockImplementation(async (run, revision) => {
+      const result = await save(run, revision);
+      advance(700);
+      return result;
+    });
+    const service = new MinesweeperService(repository, {
+      now,
+      seed: () => {
+        advance(400);
+        return 42;
+      },
+    });
+    let run = await service.create(player, request);
+    expect(run.elapsedMs).toBe(0);
+    const original = await get(run.id);
+    expect(original?.timing).toEqual({ runningSince: now(), pending: false });
+    const flagged = run.board.cells.indexOf(-2);
+    advance(800); // Thinking and network transit remain part of the result.
+    run = await service.move(player, {
+      runId: run.id,
+      revision: run.revision,
+      cell: flagged,
+      action: 'flag',
+      elapsedMs: 0,
+      processingMs: 999999,
+    });
+    expect(run.elapsedMs).toBe(800);
+    advance(400);
+    run = await service.move(player, {
+      runId: run.id,
+      revision: run.revision,
+      cell: flagged,
+      action: 'flag',
+    });
+    expect(run.elapsedMs).toBe(1200);
+    let expectedMs = 1200;
+    let winningInput:
+      | { runId: string; revision: number; cell: number; action: 'reveal' }
+      | undefined;
+    for (let cell = 0; cell < run.board.cells.length; cell++) {
+      if (original?.state.cells[cell] === -1 || (run.board.cells[cell] ?? 0) >= 0) continue;
+      advance(10);
+      expectedMs += 10;
+      winningInput = { runId: run.id, revision: run.revision, cell, action: 'reveal' };
+      run = await service.move(player, winningInput);
+    }
+    expect(run.board.status).toBe('won');
+    expect(run.elapsedMs).toBe(expectedMs);
+    expect(now() - run.startedAt).toBeGreaterThan(expectedMs + 2000);
+    advance(5000);
+    expect((await service.move(player, winningInput)).elapsedMs).toBe(expectedMs);
+    expect((await service.leaderboard(player, { size: '9x9', period: 'all' })).me?.elapsedMs).toBe(
+      expectedMs,
+    );
+  });
+  it('does not reset the clock on repeated starts or grant time for replayed requests', async () => {
+    const { service, repository, player, advance } = setup();
+    const run = await service.create(player, request);
+    const original = await repository.get(run.id);
+    advance(250);
+    expect((await service.create(player, request)).elapsedMs).toBe(250);
+    advance(500);
+    expect((await service.create(player, request)).elapsedMs).toBe(750);
+    expect((await repository.get(run.id))?.timing).toEqual(original?.timing);
+    const input = { runId: run.id, revision: 0, cell: run.board.cells.indexOf(-2), action: 'flag' };
+    expect((await service.move(player, input)).elapsedMs).toBe(750);
+    const accepted = await repository.get(run.id);
+    advance(1000);
+    expect((await service.move(player, input)).elapsedMs).toBe(1750);
+    expect(await repository.get(run.id)).toEqual(accepted);
+  });
+  it('recovers conservatively from a failed timing checkpoint and rejects late completion of an older move', async () => {
+    const { service, repository, player, advance, now } = setup();
+    const run = await service.create(player, request);
+    vi.spyOn(repository, 'resumeTimer').mockRejectedValueOnce(new Error('Timing write failed'));
+    const cell = run.board.cells.indexOf(-2);
+    const input = { runId: run.id, revision: 0, cell, action: 'flag' };
+    advance(100);
+    await expect(service.move(player, input)).rejects.toThrow('Timing write failed');
+    const pending = await repository.get(run.id);
+    expect(pending?.timing.pending).toBe(true);
+    advance(500);
+    expect((await service.move(player, input)).elapsedMs).toBe(600);
+    const current = await service.move(player, { ...input, revision: 1 });
+    expect(current.elapsedMs).toBe(600);
+    const stored = await repository.get(run.id);
+    if (!pending) throw new Error('Missing pending run');
+    expect(await repository.resumeTimer(pending, now() + 9000)).toBeNull();
+    expect(await repository.get(run.id)).toEqual(stored);
+    expect(stored?.timing.pending).toBe(false);
+  });
+  it('keeps a wall-clock expiry even when most of the attempt was spent processing', async () => {
+    const { service, repository, player, advance } = setup();
+    const run = await service.create(player, request);
+    const save = repository.save.bind(repository);
+    vi.spyOn(repository, 'save').mockImplementation(async (next, revision) => {
+      const result = await save(next, revision);
+      advance(MINE_LIMIT_MS);
+      return result;
+    });
+    advance(10);
+    const input = { runId: run.id, revision: 0, cell: run.board.cells.indexOf(-2), action: 'flag' };
+    expect((await service.move(player, input)).elapsedMs).toBe(10);
+    await expect(service.move(player, { ...input, revision: 1 })).rejects.toMatchObject({
+      code: 'EXPIRED',
+    });
+  });
   it('preserves flags placed before the first reveal, including across retries and subsequent moves', async () => {
     const { service, repository, player, advance } = setup();
     const input = { ...request, flags: [10, 1] };
@@ -141,8 +264,8 @@ describe('Authoritative Minesweeper runs and SQL rankings', () => {
     });
     expect(opened.board.cells[1]).toBeGreaterThanOrEqual(0);
   });
-  it('rejects malformed initial flags and reads legacy saved runs without initial flags', async () => {
-    const { service, repository, player, database } = setup();
+  it('rejects malformed initial flags and continues legacy runs without flags or timing metadata', async () => {
+    const { service, repository, player, database, advance } = setup();
     for (const flags of [null, '1', [0], [1, 1], [-1], [81], [0.5], ['1']])
       await expect(service.create(player, { ...request, flags })).rejects.toMatchObject({
         code: 'BAD_INPUT',
@@ -150,11 +273,22 @@ describe('Authoritative Minesweeper runs and SQL rankings', () => {
     const run = await service.create(player, request);
     database
       .prepare(
-        "UPDATE minesweeper_runs SET state_json=json_remove(state_json,'$.initialFlags') WHERE id=?",
+        "UPDATE minesweeper_runs SET state_json=json_remove(state_json,'$.initialFlags','$.timing'),elapsed_ms=500 WHERE id=?",
       )
       .run(run.id);
     const stored = await repository.get(run.id);
     expect(stored?.initialFlags).toEqual([]);
+    expect(stored?.timing).toEqual({ runningSince: run.startedAt + 500, pending: false });
+    advance(1000);
+    expect((await service.create(player, request)).elapsedMs).toBe(1000);
+    const continued = await service.move(player, {
+      runId: run.id,
+      revision: 0,
+      cell: run.board.cells.indexOf(-2),
+      action: 'flag',
+    });
+    expect(continued.elapsedMs).toBe(1000);
+    expect((await repository.get(run.id))?.timing.pending).toBe(false);
   });
   it.each(SIZES)(
     'verifies %s victory using server time and ignores forged result fields',
@@ -288,6 +422,7 @@ describe('Authoritative Minesweeper runs and SQL rankings', () => {
         initialFlags: [],
         startedAt,
         elapsedMs,
+        timing: { runningSince: startedAt + elapsedMs, pending: false },
         lastAction: null,
       });
     }

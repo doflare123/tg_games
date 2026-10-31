@@ -62,7 +62,7 @@ export function mountMinesweeper(host: GameHost): GameAdapter {
   const rankingNote = element(
     'p',
     'control-hint',
-    'Для каждого размера — отдельный рейтинг времени. В зачёт идут только победы. Время начинается с первого открытия; в рейтинговой игре паузы нет. Лимит партии — 60 минут.',
+    'Для каждого размера — отдельный рейтинг времени. В зачёт идут только победы. Серверный расчёт ходов вычитается из времени; задержка сети учитывается. В рейтинговой игре нет ручной паузы. Лимит партии — 60 минут.',
   );
   shell.append(controls, hud, scroll, status, retry, rules, rankingNote);
   host.container.replaceChildren(shell);
@@ -171,6 +171,9 @@ export function mountMinesweeper(host: GameHost): GameAdapter {
     if (!pending || busy || disposed) return;
     const current = epoch;
     const operation = pending;
+    const sentAt = performance.now();
+    baseMs = elapsed();
+    anchoredAt = 0;
     busy = true;
     status.textContent = 'Проверяем ход…';
     render();
@@ -185,6 +188,10 @@ export function mountMinesweeper(host: GameHost): GameAdapter {
       status.textContent = 'Рейтинговая партия · открой все клетки без мин.';
     } catch (error) {
       if (disposed || current !== epoch) return;
+      // An unconfirmed request cannot grant free time: the server may have
+      // accepted it already, or may never have received it. Reconcile on retry.
+      baseMs += performance.now() - sentAt;
+      anchoredAt = performance.now();
       status.textContent = `${errorMessage(error)} Повтори ход или начни новую партию. Таймер продолжает идти.`;
     } finally {
       if (!disposed && current === epoch) {

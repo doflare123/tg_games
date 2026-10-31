@@ -26,12 +26,14 @@ export interface StoredMineRun {
   initialFlags: number[];
   startedAt: number;
   elapsedMs: number;
+  timing: { runningSince: number; pending: boolean };
   lastAction: string | null;
 }
 export interface MineRepository {
   get(id: string): Promise<StoredMineRun | null>;
-  create(run: StoredMineRun): Promise<StoredMineRun>;
+  create(run: StoredMineRun): Promise<{ run: StoredMineRun; created: boolean }>;
   save(run: StoredMineRun, expectedRevision: number): Promise<boolean>;
+  resumeTimer(run: StoredMineRun, runningSince: number): Promise<StoredMineRun | null>;
   countRecent(playerId: number, since: number): Promise<number>;
   leaderboard(
     player: Player,
@@ -53,11 +55,15 @@ export class MinesweeperService {
       startedAt: run.startedAt,
       elapsedMs:
         run.state.status === 'playing'
-          ? Math.min(MINE_LIMIT_MS, Math.max(0, this.clock.now() - run.startedAt))
+          ? Math.min(
+              MINE_LIMIT_MS,
+              run.elapsedMs + Math.max(0, this.clock.now() - run.timing.runningSince),
+            )
           : run.elapsedMs,
     };
   }
   async create(player: Player, input: unknown): Promise<MineRunView> {
+    const receivedAt = this.clock.now();
     const data = object(input);
     const size = oneOf(data.size, SIZES);
     const { width, height } = LEVELS[size];
@@ -75,23 +81,41 @@ export class MinesweeperService {
     const id = `${player.id}:mine:${requestId}`;
     const existing = await this.repository.get(id);
     if (existing) return this.createdView(existing, size, firstCell, initialFlags);
-    const now = this.clock.now();
-    if ((await this.repository.countRecent(player.id, now - 60000)) >= 10)
+    if ((await this.repository.countRecent(player.id, receivedAt - 60000)) >= 10)
       throw new AppError('RATE_LIMIT', 'Слишком много партий. Подожди минуту.');
-    const run = await this.repository.create({
+    const state = createMines(size, this.clock.seed(), firstCell, initialFlags);
+    const { run, created } = await this.repository.create({
       id,
       playerId: player.id,
       playerName: player.name,
       ruleset: MINE_RULESET,
       revision: 0,
-      state: createMines(size, this.clock.seed(), firstCell, initialFlags),
+      state,
       firstCell,
       initialFlags,
-      startedAt: now,
+      startedAt: receivedAt,
       elapsedMs: 0,
+      timing: { runningSince: this.clock.now(), pending: true },
       lastAction: null,
     });
-    return this.createdView(run, size, firstCell, initialFlags);
+    if (!created) return this.createdView(run, size, firstCell, initialFlags);
+    return this.complete(run);
+  }
+  private async complete(run: StoredMineRun): Promise<MineRunView> {
+    if (run.state.status === 'playing') {
+      // Resume after the board calculation and primary DB write. This small,
+      // revision-guarded checkpoint is the only remaining timing overhead.
+      const resumed = await this.repository.resumeTimer(run, this.clock.now());
+      if (!resumed) {
+        const latest = await this.repository.get(run.id);
+        if (!latest) throw new AppError('NOT_FOUND', 'Партия не найдена');
+        return this.view(latest);
+      }
+      run = resumed;
+    }
+    // The accepted move ends at request arrival, so its own processing cannot
+    // inflate either a winning result or the time returned to the client.
+    return { ...this.view(run), elapsedMs: run.elapsedMs };
   }
   private createdView(
     run: StoredMineRun,
@@ -109,6 +133,7 @@ export class MinesweeperService {
     return this.view(run);
   }
   async move(player: Player, input: unknown): Promise<MineRunView> {
+    const receivedAt = this.clock.now();
     const data = object(input);
     const id = text(data.runId, 1, 100);
     const revision = integer(data.revision, 0, 19999);
@@ -122,8 +147,9 @@ export class MinesweeperService {
     if (run.revision !== revision || run.state.status !== 'playing')
       throw new AppError('CONFLICT', 'Партия обновилась или завершена');
     if (run.ruleset !== MINE_RULESET) throw new AppError('UNAVAILABLE', 'Версия правил устарела');
-    const elapsedMs = Math.max(0, this.clock.now() - run.startedAt);
-    if (elapsedMs >= MINE_LIMIT_MS) throw new AppError('EXPIRED', 'Время партии истекло');
+    if (receivedAt - run.startedAt >= MINE_LIMIT_MS)
+      throw new AppError('EXPIRED', 'Время партии истекло');
+    const elapsedMs = run.elapsedMs + Math.max(0, receivedAt - run.timing.runningSince);
     const state: MineState = {
       ...run.state,
       cells: [...run.state.cells],
@@ -131,10 +157,17 @@ export class MinesweeperService {
       flags: [...run.state.flags],
     };
     actMines(state, action, cell);
-    const next = { ...run, state, elapsedMs, revision: revision + 1, lastAction: receipt };
+    const next = {
+      ...run,
+      state,
+      elapsedMs,
+      revision: revision + 1,
+      lastAction: receipt,
+      timing: { runningSince: this.clock.now(), pending: true },
+    };
     if (!(await this.repository.save(next, revision)))
       throw new AppError('CONFLICT', 'Ход уже обработан другим запросом');
-    return this.view(next);
+    return this.complete(next);
   }
   async leaderboard(player: Player, input: unknown): Promise<MineLeaderboard> {
     const data = object(input);

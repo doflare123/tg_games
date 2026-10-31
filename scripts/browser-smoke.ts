@@ -126,20 +126,59 @@ try {
   await page.screenshot({ path: '.cache/screenshots/minesweeper.png', fullPage: true });
   if (!production) {
     await page.getByRole('button', { name: 'Рейтинговая игра', exact: true }).click();
+    let releaseMineCreate: (() => void) | undefined;
+    const mineCreateGate = new Promise<void>((resolve) => {
+      releaseMineCreate = resolve;
+    });
+    await page.route('**/__dev/rpc/createMineRun', async (route) => {
+      await mineCreateGate;
+      await route.continue();
+    });
     await page.locator('.mine-cell').first().click();
+    const pendingCreateTime = await page.locator('.mine-timer').textContent();
+    await page.waitForTimeout(650);
+    assert.equal(
+      await page.locator('.mine-timer').textContent(),
+      pendingCreateTime,
+      'The ranked timer must freeze while creating the board',
+    );
+    releaseMineCreate?.();
     await page
       .getByText('Рейтинговая партия · открой все клетки без мин.', { exact: true })
       .waitFor();
+    await page.unroute('**/__dev/rpc/createMineRun');
     let failMove = true;
+    let releaseMineMove: (() => void) | undefined;
+    const mineMoveGate = new Promise<void>((resolve) => {
+      releaseMineMove = resolve;
+    });
     await page.route('**/__dev/rpc/moveMineRun', async (route) => {
       if (failMove) {
         failMove = false;
         await route.abort();
-      } else await route.continue();
+      } else {
+        await mineMoveGate;
+        await route.continue();
+      }
     });
     await page.locator('.mine-cell[data-value="-2"]').first().click({ button: 'right' });
     await page.getByRole('button', { name: 'Повторить ход', exact: true }).waitFor();
+    const failedTime = await page.locator('.mine-timer').textContent();
+    await page.waitForTimeout(150);
+    assert.notEqual(
+      await page.locator('.mine-timer').textContent(),
+      failedTime,
+      'A failed request must not leave the timer paused indefinitely',
+    );
     await page.getByRole('button', { name: 'Повторить ход', exact: true }).click();
+    const pendingMoveTime = await page.locator('.mine-timer').textContent();
+    await page.waitForTimeout(650);
+    assert.equal(
+      await page.locator('.mine-timer').textContent(),
+      pendingMoveTime,
+      'The ranked timer must freeze while waiting for a move result',
+    );
+    releaseMineMove?.();
     await page
       .getByText('Рейтинговая партия · открой все клетки без мин.', { exact: true })
       .waitFor();
@@ -409,10 +448,64 @@ try {
     });
     await phone.getByRole('button', { name: 'Продолжить', exact: true }).click();
     await phone.locator('.tetris-canvas').scrollIntoViewIfNeeded();
+    assert.equal(
+      await phone.locator('.tetris-canvas').evaluate((node) => document.activeElement === node),
+      true,
+      'Resuming must return keyboard focus to the board',
+    );
     assert.ok(saved && typeof saved === 'object' && 'active' in saved && 'board' in saved);
     return saved as TetrisState;
   };
   let initial = await snapshot();
+  await phone.keyboard.press('f');
+  await phone.waitForTimeout(60);
+  const heldWithF = await snapshot();
+  assert.equal(heldWithF.hold, initial.active.kind, 'F must hold the active piece');
+  assert.equal(heldWithF.canHold, false);
+  await phone.keyboard.press('Space');
+  await phone.waitForTimeout(60);
+  const beforeC = await snapshot();
+  await phone.keyboard.press('c');
+  await phone.waitForTimeout(60);
+  const heldWithC = await snapshot();
+  assert.equal(heldWithC.hold, beforeC.active.kind, 'C must remain a hold shortcut');
+  assert.equal(heldWithC.active.kind, beforeC.hold);
+  await phone.keyboard.press('Space');
+  await phone.waitForTimeout(60);
+  const beforeMouseHold = await snapshot();
+  await phone.getByRole('button', { name: 'HOLD', exact: true }).click();
+  assert.equal(
+    await phone.locator('.tetris-canvas').evaluate((node) => document.activeElement === node),
+    true,
+    'Clicking HOLD must return keyboard focus to the board',
+  );
+  await phone.keyboard.press('ArrowLeft');
+  await phone.waitForTimeout(60);
+  const afterMouseHold = await snapshot();
+  assert.equal(afterMouseHold.hold, beforeMouseHold.active.kind);
+  assert.equal(
+    afterMouseHold.active.x,
+    2,
+    'Arrows must move the piece immediately after mouse HOLD',
+  );
+  await phone.getByRole('button', { name: /Звук:/ }).click();
+  assert.equal(
+    await phone.locator('.tetris-canvas').evaluate((node) => document.activeElement === node),
+    true,
+    'Clicking sound must return keyboard focus without scrolling to the board',
+  );
+  const afterSoundClickScroll = await phone.evaluate(() => window.scrollY);
+  await phone.keyboard.press('ArrowRight');
+  await phone.waitForTimeout(60);
+  assert.equal(
+    await phone.evaluate(() => window.scrollY),
+    afterSoundClickScroll,
+    'Gameplay arrows must not scroll the page after clicking a control',
+  );
+  const afterSoundClick = await snapshot();
+  assert.equal(afterSoundClick.active.x, 3, 'Arrows must keep working after clicking sound');
+  await phone.getByRole('button', { name: 'Свободная игра', exact: true }).click();
+  initial = await snapshot();
   if (initial.active.kind === 'O') {
     await phone.getByRole('button', { name: 'HOLD', exact: true }).click();
     await phone.waitForTimeout(60);

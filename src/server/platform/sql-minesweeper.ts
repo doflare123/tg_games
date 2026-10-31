@@ -30,6 +30,13 @@ function decodeStored(value: unknown): StoredMineRun {
   const initialFlags = state.initialFlags ?? [];
   if (!Array.isArray(initialFlags) || initialFlags.length > total)
     throw new Error('Invalid initial flags');
+  const startedAt = integer(r.started_at, 0, Number.MAX_SAFE_INTEGER);
+  const elapsedMs = integer(r.elapsed_ms, 0, MINE_LIMIT_MS);
+  // Old runs used wall time. Continue them from their last accepted elapsed time.
+  const timing =
+    state.timing === undefined
+      ? { runningSince: startedAt + elapsedMs, pending: false }
+      : object(state.timing);
   return {
     id: text(r.id, 1, 100),
     playerId: integer(r.player_id, 1, Number.MAX_SAFE_INTEGER),
@@ -45,8 +52,12 @@ function decodeStored(value: unknown): StoredMineRun {
     },
     firstCell: integer(r.first_cell, 0, total - 1),
     initialFlags: initialFlags.map((cell) => integer(cell, 0, total - 1)),
-    startedAt: integer(r.started_at, 0, Number.MAX_SAFE_INTEGER),
-    elapsedMs: integer(r.elapsed_ms, 0, MINE_LIMIT_MS),
+    startedAt,
+    elapsedMs,
+    timing: {
+      runningSince: integer(timing.runningSince, startedAt, Number.MAX_SAFE_INTEGER),
+      pending: bool(timing.pending),
+    },
     lastAction: r.last_action === null ? null : text(r.last_action, 1, 200),
   };
 }
@@ -58,7 +69,7 @@ function params(run: StoredMineRun): SqlParameters {
     ':ruleset': run.ruleset,
     ':size': run.state.size,
     ':revision': run.revision,
-    ':state': JSON.stringify({ ...run.state, initialFlags: run.initialFlags }),
+    ':state': stateJson(run),
     ':status': run.state.status,
     ':first': run.firstCell,
     ':started': run.startedAt,
@@ -66,23 +77,26 @@ function params(run: StoredMineRun): SqlParameters {
     ':action': run.lastAction,
   };
 }
+function stateJson(run: StoredMineRun): string {
+  return JSON.stringify({ ...run.state, initialFlags: run.initialFlags, timing: run.timing });
+}
 export class SqlMineRepository implements MineRepository {
   constructor(private readonly db: SqlDatabase) {}
   async get(id: string): Promise<StoredMineRun | null> {
     const value = await this.db.get('SELECT * FROM minesweeper_runs WHERE id=:id', { ':id': id });
     return value == null ? null : decodeStored(value);
   }
-  async create(run: StoredMineRun): Promise<StoredMineRun> {
-    await this.db.run(
+  async create(run: StoredMineRun): Promise<{ run: StoredMineRun; created: boolean }> {
+    const result = await this.db.run(
       `INSERT INTO minesweeper_runs
       (id,player_id,player_name,ruleset,size,revision,state_json,status,first_cell,started_at,elapsed_ms,last_action)
       VALUES (:id,:player,:name,:ruleset,:size,:revision,:state,:status,:first,:started,:elapsed,:action)
-      ON CONFLICT(id) DO NOTHING`,
+      ON CONFLICT(id) DO NOTHING RETURNING id`,
       params(run),
     );
     const stored = await this.get(run.id);
     if (!stored) throw new Error('Mine run insert failed');
-    return stored;
+    return { run: stored, created: returnedRows(result).length === 1 };
   }
   async save(run: StoredMineRun, expectedRevision: number): Promise<boolean> {
     const result = await this.db.run(
@@ -91,7 +105,7 @@ export class SqlMineRepository implements MineRepository {
       {
         ':id': run.id,
         ':revision': run.revision,
-        ':state': JSON.stringify({ ...run.state, initialFlags: run.initialFlags }),
+        ':state': stateJson(run),
         ':status': run.state.status,
         ':elapsed': run.elapsedMs,
         ':action': run.lastAction,
@@ -99,6 +113,22 @@ export class SqlMineRepository implements MineRepository {
       },
     );
     return returnedRows(result).length === 1;
+  }
+  async resumeTimer(run: StoredMineRun, runningSince: number): Promise<StoredMineRun | null> {
+    if (!run.timing.pending || run.state.status !== 'playing') return null;
+    const result = await this.db.run(
+      `UPDATE minesweeper_runs SET state_json=:state
+      WHERE id=:id AND revision=:revision AND status='playing'
+      AND state_json=:previous RETURNING *`,
+      {
+        ':id': run.id,
+        ':revision': run.revision,
+        ':previous': stateJson(run),
+        ':state': stateJson({ ...run, timing: { runningSince, pending: false } }),
+      },
+    );
+    const rows = returnedRows(result);
+    return rows.length === 1 ? decodeStored(rows[0]) : null;
   }
   async countRecent(playerId: number, since: number): Promise<number> {
     const result = object(

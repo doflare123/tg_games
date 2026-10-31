@@ -423,7 +423,7 @@ export async function mountTetris(
     element(
       'p',
       'control-hint',
-      '← → движение · ↑ поворот · Z обратный поворот · ↓ спуск · пробел сброс · C hold',
+      '← → движение · ↑ поворот · Z обратный поворот · ↓ спуск · пробел сброс · F / C — HOLD',
     ),
   );
   hud.append(pauseButton);
@@ -440,10 +440,14 @@ export async function mountTetris(
       'Тап — поворот · удержание — ускорение\nСвайп ← → — движение · резко вниз — сброс',
     ),
   );
-  hud.append(button('HOLD', () => enqueue('hold'), 'touch-key hold-button'));
+  const holdButton = button('HOLD · F', () => enqueue('hold'), 'touch-key hold-button');
+  holdButton.setAttribute('aria-label', 'HOLD');
+  holdButton.setAttribute('aria-keyshortcuts', 'f c');
+  holdButton.title = 'Отложить фигуру — F или C';
+  hud.append(holdButton);
   canvas.setAttribute(
     'aria-description',
-    'Тап — поворот. Удержание — ускоренное падение. Свайпы влево и вправо — движение, быстрый свайп вниз — сброс. Также доступна клавиатура.',
+    'Тап — поворот. Удержание — ускоренное падение. Свайпы влево и вправо — движение, быстрый свайп вниз — сброс. На клавиатуре F или C — отложить фигуру.',
   );
   stage.append(gestureTools);
   gestureInput = mountTetrisGestures(canvas, {
@@ -455,6 +459,22 @@ export async function mountTetris(
   });
   wrap.append(stage, hud, panel);
   host.container.append(wrap);
+  // Buttons take focus on click; return it after their action so gameplay keys keep working.
+  wrap.addEventListener(
+    'click',
+    (event) => {
+      if (
+        event.target instanceof Element &&
+        event.target.closest('button') &&
+        started &&
+        !paused &&
+        !disposed &&
+        state.status === 'playing'
+      )
+        canvas.focus({ preventScroll: true });
+    },
+    { signal: signal.signal },
+  );
   const keyMap: Record<string, TetrisAction> = {
     ArrowLeft: 'left',
     ArrowRight: 'right',
@@ -464,6 +484,7 @@ export async function mountTetris(
     KeyZ: 'rotateCCW',
     Space: 'hardDrop',
     KeyC: 'hold',
+    KeyF: 'hold',
   };
   window.addEventListener(
     'keydown',

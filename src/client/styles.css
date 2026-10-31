@@ -241,7 +241,7 @@ h1 span {
 }
 .games-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 19px;
 }
 .games-grid:has(> :only-child) {
@@ -783,4 +783,35 @@ h1 span {
 }
 .button[hidden] {
   display: none;
+}
+.board-game-picker {
+  margin: 28px 0 0;
+}
+.minesweeper-preview {
+  display: grid;
+  place-items: center;
+  background: #20271b;
+}
+.mine-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 38px);
+  gap: 4px;
+  transform: rotate(-8deg);
+}
+.mine-preview-grid span {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  background: #46543a;
+  border: 1px solid #60744e;
+  border-bottom: 4px solid #293321;
+  font:
+    bold 23px ui-monospace,
+    monospace;
+  color: #b3ce91;
+}
+.mine-preview-grid .open {
+  background: #161e13;
+  color: #f4c775;
 }

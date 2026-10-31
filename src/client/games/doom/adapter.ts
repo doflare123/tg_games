@@ -47,8 +47,7 @@ export async function mountDoom(host: GameHost): Promise<GameAdapter> {
           ready = true;
           start();
         }
-        if (data.type === 'doom:running')
-          host.container.closest('dialog')?.scrollTo({ top: 0, behavior: 'instant' });
+        if (data.type === 'doom:running') window.scrollTo({ top: 0, behavior: 'instant' });
         if (data.type === 'doom:running')
           status.textContent =
             'Движок запущен. Enter — меню, Ctrl — огонь, Space — действие. Сохранения F2 / загрузка F3.';

@@ -80,13 +80,25 @@ export class SqlSocialRepository implements SocialRepository {
       },
     );
   }
-  async groupsFor(userId: number) {
+  async groupCandidates(userId: number) {
     const rows = await this.db.all(
-      `SELECT g.* FROM groups g JOIN group_memberships m ON m.group_id=g.id WHERE m.user_id=:user AND m.active=1 AND g.active=1 AND g.bot_admin=1 ORDER BY g.id LIMIT 50`,
+      `SELECT g.* FROM groups g LEFT JOIN group_memberships m ON m.group_id=g.id AND m.user_id=:user WHERE g.active=1 AND g.bot_admin=1 ORDER BY CASE WHEN m.active=1 THEN 0 ELSE 1 END,g.id LIMIT 50`,
       { ':user': userId },
     );
     if (!Array.isArray(rows)) throw new Error('Invalid group rows');
     return rows.map(decodeGroup);
+  }
+  async membersToRefresh(chatId: number, checkedSince: number, limit: number) {
+    const rows = await this.db.all(
+      `WITH players AS (
+      SELECT player_id FROM runs WHERE status='verified' UNION SELECT player_id FROM manual_results
+    ) SELECT p.player_id FROM players p LEFT JOIN group_memberships m ON m.user_id=p.player_id AND m.group_id=:group
+      WHERE m.updated_at IS NULL OR m.updated_at<:since
+      ORDER BY CASE WHEN m.updated_at IS NULL THEN 0 ELSE 1 END,m.updated_at,p.player_id LIMIT :limit`,
+      { ':group': chatId, ':since': checkedSince, ':limit': limit },
+    );
+    if (!Array.isArray(rows)) throw new Error('Invalid membership candidates');
+    return rows.map((row) => integer(object(row).player_id, 1, Number.MAX_SAFE_INTEGER));
   }
   async notifications(chatId: number, enabled: boolean, now: number) {
     await this.db.run(

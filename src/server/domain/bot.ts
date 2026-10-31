@@ -40,7 +40,7 @@ export class GameBotService {
     const msg = object(payload);
     const body = typeof msg.text === 'string' ? msg.text.trim() : '';
     const match =
-      /^\/(start|help|games|top|game_doom|game_mario|game_tetris|game_top|game_notify_on|game_notify_off)(?:@([a-zA-Z0-9_]+))?(?:\s|$)/.exec(
+      /^\/(start|help|games|top|game_doom|game_mario|game_tetris|game_minesweeper|game_top|game_notify_on|game_notify_off)(?:@([a-zA-Z0-9_]+))?(?:\s|$)/.exec(
         body,
       );
     if (!match?.[1]) return;
@@ -109,7 +109,7 @@ export class GameBotService {
             enabled: command === 'game_notify_on',
           });
           message = group.notificationsEnabled
-            ? 'Объявления включены: проверенный рекорд, обгон соперника и улучшение места в топ-10. Не чаще одного сообщения за 5 минут.'
+            ? 'Объявления включены: первый рекорд группы, новый рекорд группы или обгон в её топ-10. Не чаще одного сообщения за 5 минут.'
             : 'Объявления о рекордах выключены.';
           target = `board_${chatId}`;
           response = 'Открыть рейтинг';
@@ -164,6 +164,7 @@ export class GameBotService {
       botAdmin: status === 'administrator' || status === 'creator',
     });
     if (active) await this.telegram.commands(GAME_COMMANDS, id);
+    if (status === 'administrator' || status === 'creator') await this.groups.synchronize(id);
   }
   async membership(payload: unknown): Promise<void> {
     const update = object(payload);

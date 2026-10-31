@@ -15,7 +15,7 @@ import {
   type RunView,
 } from '../../shared/contracts.ts';
 import { AppError, integer, object, oneOf, text } from '../../shared/errors.ts';
-import { groupId } from '../../shared/groups.ts';
+import { type BoardScope, groupId } from '../../shared/groups.ts';
 import { cloneTetris } from '../../shared/validation.ts';
 import type { GroupService } from './groups.ts';
 import { type ArcadeRepository, finalStatus, runView, type StoredRun } from './repository.ts';
@@ -155,19 +155,24 @@ export class ArcadeService {
     const date = new Date(this.clock.now());
     date.setUTCHours(0, 0, 0, 0);
     date.setUTCDate(date.getUTCDate() - ((date.getUTCDay() + 6) % 7));
-    const scope: { groupId?: number } = {};
+    const scope: BoardScope = {};
+    let membershipSync: LeaderboardView['membershipSync'];
     if (data.groupId !== undefined) {
       const id = groupId(data.groupId);
       if (!this.groups) throw new AppError('UNAVAILABLE', 'Группы не подключены');
       await this.groups.access(player, id);
+      const sync = await this.groups.synchronize(id);
+      membershipSync = sync.state;
       scope.groupId = id;
+      scope.membershipCheckedSince = sync.checkedSince;
     }
-    return this.repository.leaderboard(
+    const board = await this.repository.leaderboard(
       player,
       mode,
       period,
       period === 'all' ? 0 : date.getTime(),
       scope,
     );
+    return membershipSync ? { ...board, membershipSync } : board;
   }
 }

@@ -1,11 +1,13 @@
+import type { MineAction, MineSize } from '../games/minesweeper/engine.ts';
 import type { ReplayEvent, TetrisMode, TetrisState } from '../games/tetris/types.ts';
 import type { GroupView } from './groups.ts';
+import type { MineLeaderboard, MineRunView } from './minesweeper.ts';
 export interface Player {
   id: number;
   name: string;
 }
 export interface GameInfo {
-  id: 'tetris' | 'mario' | 'doom';
+  id: 'tetris' | 'minesweeper' | 'mario' | 'doom';
   title: string;
   subtitle: string;
   available: boolean;
@@ -16,6 +18,13 @@ export const CATALOG: readonly GameInfo[] = [
     id: 'tetris',
     title: 'Тетрис',
     subtitle: 'Marathon · Sprint · Ultra',
+    available: true,
+    ranked: true,
+  },
+  {
+    id: 'minesweeper',
+    title: 'Сапёр',
+    subtitle: '9×9 · 16×16 · 30×16 — на время',
     available: true,
     ranked: true,
   },
@@ -39,6 +48,9 @@ export interface ReplayInput {
 }
 export type Period = 'all' | 'week';
 export interface LeaderboardEntry {
+  source: 'verified' | 'manual';
+  approximate: boolean;
+  durationKnown: boolean;
   rank: number;
   playerId: number;
   name: string;
@@ -48,12 +60,25 @@ export interface LeaderboardEntry {
   runId: string;
 }
 export interface LeaderboardView {
+  membershipSync?: 'complete' | 'pending' | 'failed';
   mode: TetrisMode;
   period: Period;
   entries: LeaderboardEntry[];
   me: LeaderboardEntry | null;
 }
 export interface Endpoints {
+  createMineRun: {
+    input: { requestId: string; size: MineSize; firstCell: number; flags?: number[] };
+    output: MineRunView;
+  };
+  moveMineRun: {
+    input: { runId: string; revision: number; action: MineAction; cell: number };
+    output: MineRunView;
+  };
+  getMineLeaderboard: {
+    input: { size: MineSize; period: Period };
+    output: MineLeaderboard;
+  };
   getCatalog: { input: Record<string, never>; output: readonly GameInfo[] };
   getProfile: { input: Record<string, never>; output: Player };
   createRun: { input: { requestId: string; mode: TetrisMode }; output: RunView };

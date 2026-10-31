@@ -5,8 +5,12 @@ import { DatabaseSync } from 'node:sqlite';
 import { ArcadeService } from '../src/server/domain/arcade.ts';
 import { GroupService } from '../src/server/domain/groups.ts';
 import { MaintenanceService } from '../src/server/domain/maintenance.ts';
+import { MinesweeperService } from '../src/server/domain/minesweeper.ts';
 import type { TelegramGateway } from '../src/server/domain/telegram.ts';
+import { MANUAL_RESULTS_DDL } from '../src/server/platform/manual-results-ddl.ts';
+import { MINESWEEPER_DDL } from '../src/server/platform/minesweeper-ddl.ts';
 import { RUN_SOCIAL_COLUMNS, SOCIAL_DDL } from '../src/server/platform/social-ddl.ts';
+import { SqlMineRepository } from '../src/server/platform/sql-minesweeper.ts';
 import { SqlArcadeRepository, type SqlDatabase } from '../src/server/platform/sql-repository.ts';
 import { SqlSocialRepository } from '../src/server/platform/sql-social-repository.ts';
 import { AppError } from '../src/shared/errors.ts';
@@ -32,6 +36,8 @@ export function localRepository(file = ':memory:') {
     if (!columns.some((column) => column.name === name))
       database.exec(`ALTER TABLE runs ADD COLUMN ${name} ${definition}`);
   database.exec(SOCIAL_DDL);
+  database.exec(MANUAL_RESULTS_DDL);
+  database.exec(MINESWEEPER_DDL);
   // Match tgcloud's read/write split instead of letting SQLite accept writes in get/all.
   const read = <T>(query: () => T): T => {
     database.exec('PRAGMA query_only=ON');
@@ -97,6 +103,10 @@ export function createLocalApi(file: string) {
     groups,
   );
   const player = { id: 1, name: 'Локальный игрок' };
+  const minesweeper = new MinesweeperService(new SqlMineRepository(local.db), {
+    now: () => Date.now(),
+    seed: () => Math.floor(Math.random() * 0x100000000),
+  });
   return {
     close: local.close,
     async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -122,6 +132,15 @@ export function createLocalApi(file: string) {
         const method = req.url?.split('?')[0]?.split('/').pop();
         let result: unknown;
         switch (method) {
+          case 'createMineRun':
+            result = await minesweeper.create(player, input);
+            break;
+          case 'moveMineRun':
+            result = await minesweeper.move(player, input);
+            break;
+          case 'getMineLeaderboard':
+            result = await minesweeper.leaderboard(player, input);
+            break;
           case 'getGroups':
             result = await groups.list(player);
             break;

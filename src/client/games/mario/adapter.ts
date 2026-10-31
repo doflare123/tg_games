@@ -66,7 +66,7 @@ export async function mountMario(host: GameHost): Promise<GameAdapter> {
           browser.nes.loadROM(bytes);
           browser.start();
           browser.fitInParent();
-          host.container.closest('dialog')?.scrollTo({ top: 0, behavior: 'instant' });
+          window.scrollTo({ top: 0, behavior: 'instant' });
           status.textContent =
             'Нажми START. X / A — прыжок, Z / B — бег и огонь. Сохранения привязаны к этому ROM.';
         } catch (error) {

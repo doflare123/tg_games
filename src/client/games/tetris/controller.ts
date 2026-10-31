@@ -18,7 +18,9 @@ import { loadLocal, saveLocal } from '../../platform/storage.ts';
 import { button, element, errorMessage, formatTime } from '../../ui/dom.ts';
 import type { GameAdapter, GameHost } from '../adapter.ts';
 import { TetrisAudio } from './audio.ts';
-import { drawTetris } from './renderer.ts';
+import { mountFourLineEffect } from './clear-effect.ts';
+import { type GestureInput, mountTetrisGestures } from './gesture-input.ts';
+import { drawPiecePreview, drawTetris } from './renderer.ts';
 import { ReplayUploader } from './replay-uploader.ts';
 
 export async function mountTetris(
@@ -31,31 +33,56 @@ export async function mountTetris(
   const wrap = element('div', 'tetris-layout');
   const stage = element('div', 'tetris-stage');
   const canvas = element('canvas', 'tetris-canvas');
-  canvas.width = 300;
-  canvas.height = 600;
+  canvas.width = 600;
+  canvas.height = 1200;
   canvas.setAttribute('aria-label', 'Игровое поле Тетриса');
-  const compactHud = element('div', 'compact-hud');
-  stage.append(compactHud, canvas);
+  const playMode = element('p', 'eyebrow play-mode', 'ВЫБЕРИ ТИП ПАРТИИ');
+  const board = element('div', 'tetris-board');
+  board.append(canvas);
+  const fourLineEffect = mountFourLineEffect(board);
+  stage.append(board);
   canvas.tabIndex = 0;
+  const hud = element('aside', 'tetris-hud');
+  hud.setAttribute('aria-label', 'Показатели партии');
   const panel = element('aside', 'game-panel');
   panel.append(element('span', 'eyebrow', '01 / TETRIS'), element('h2', '', 'Собери порядок.'));
   const stats = element('div', 'game-stats');
   const score = element('strong', '', '0');
   const lines = element('strong', '', '0');
-  const time = element('strong', '', '00:00.00');
-  const next = element('strong', '', '—');
-  const hold = element('strong', '', '—');
+  const time = element('strong', 'stat-time', '00:00.00');
   for (const [label, node] of [
     ['ОЧКИ', score],
     ['ЛИНИИ', lines],
     ['ВРЕМЯ', time],
-    ['ДАЛЬШЕ', next],
-    ['HOLD', hold],
   ] as const) {
     const row = element('div', 'stat-row');
     row.append(element('span', '', label), node);
     stats.append(row);
   }
+  const previews = element('div', 'piece-previews');
+  const nextPieces: HTMLCanvasElement[] = [];
+  const nextGroup = element('div', 'next-pieces');
+  nextGroup.setAttribute('role', 'group');
+  nextGroup.setAttribute('aria-label', 'Следующие фигуры по порядку');
+  nextGroup.append(element('span', 'eyebrow', 'ДАЛЬШЕ'));
+  for (let i = 0; i < 3; i++) {
+    const preview = element('canvas', 'piece-preview');
+    preview.width = 160;
+    preview.height = 80;
+    preview.setAttribute('role', 'img');
+    nextPieces.push(preview);
+    nextGroup.append(preview);
+  }
+  const holdGroup = element('div', 'hold-piece');
+  holdGroup.setAttribute('role', 'group');
+  holdGroup.setAttribute('aria-label', 'Отложенная фигура');
+  const hold = element('canvas', 'piece-preview');
+  hold.width = 160;
+  hold.height = 80;
+  hold.setAttribute('role', 'img');
+  holdGroup.append(element('span', 'eyebrow', 'ЗАПАС'), hold);
+  previews.append(nextGroup, holdGroup);
+  hud.append(playMode, stats, previews);
   const mode = element('select', 'select');
   mode.setAttribute('aria-label', 'Режим Тетриса');
   for (const [value, label] of [
@@ -83,57 +110,88 @@ export async function mountTetris(
   let lastSync = 0;
   let lastSave = 0;
   const pending: TetrisAction[] = [];
+  let gestureInput: GestureInput | undefined;
+  let gestureSoftDrop = false;
   const held = new Map<TetrisAction, number>();
   mode.value = initialMode;
   const selectedMode = () => mode.value as TetrisMode;
   let pendingCreate: { mode: TetrisMode; requestId: string } | null = null;
   const focusGame = () => {
     canvas.focus({ preventScroll: true });
-    host.container.closest('dialog')?.scrollTo({ top: 0, behavior: 'instant' });
+    window.scrollTo({ top: 0, behavior: 'instant' });
   };
   const persist = async () => {
     if (!started) return;
-    if (run?.status === 'active')
-      await saveLocal('tetris-ranked', { run, state: cloneTetris(state), events: [...events] });
-    else if (!run) await saveLocal('tetris-practice', cloneTetris(state));
+    if (run?.status === 'active') {
+      const snapshot = { run, state: cloneTetris(state), events: [...events] };
+      await Promise.all([
+        saveLocal('tetris-ranked', snapshot),
+        saveLocal(`tetris-ranked:${run.id}`, snapshot),
+      ]);
+    } else if (!run) await saveLocal('tetris-practice', cloneTetris(state));
   };
   const setStatus = (message: string) => {
     status.textContent = message;
   };
   const render = () => {
+    playMode.textContent = !started
+      ? 'ВЫБЕРИ ТИП ПАРТИИ'
+      : run
+        ? run.status === 'verified'
+          ? 'РЕЗУЛЬТАТ В РЕЙТИНГЕ'
+          : 'РЕЙТИНГОВАЯ ПАРТИЯ'
+        : 'СВОБОДНАЯ ИГРА · БЕЗ РЕЙТИНГА';
     drawTetris(canvas, state);
-    compactHud.textContent = `ОЧКИ ${state.score} / ЛИНИИ ${state.lines} / ${formatTime(state.tick)}`;
     score.textContent = state.score.toLocaleString('ru-RU');
     lines.textContent = String(state.lines);
     time.textContent = formatTime(state.tick);
-    next.textContent = state.queue.slice(0, 5).join(' ');
-    hold.textContent = state.hold ?? '—';
+    nextPieces.forEach((preview, index) => {
+      const kind = state.queue[index] ?? null;
+      if (preview.dataset.kind === String(kind)) return;
+      preview.dataset.kind = String(kind);
+      drawPiecePreview(preview, kind);
+    });
+    if (hold.dataset.kind !== String(state.hold)) {
+      hold.dataset.kind = String(state.hold);
+      drawPiecePreview(hold, state.hold);
+    }
   };
   const clearInput = () => {
     pending.length = 0;
     held.clear();
+    gestureInput?.reset();
   };
   async function sync(): Promise<void> {
     if (!run || synchronizing || disposed) return;
     synchronizing = true;
     const currentGeneration = generation;
+    // Freeze the target so responses never chase an advancing game frame in a tight loop.
+    const targetTick = state.tick;
     try {
-      while (run && run.state.tick < state.tick && !disposed && generation === currentGeneration) {
+      await persist().catch(() => {});
+      while (run && run.state.tick < targetTick && !disposed && generation === currentGeneration) {
         const activeRun = run;
-        const untilTick = Math.min(activeRun.state.tick + MAX_CHUNK_TICKS, state.tick);
+        const untilTick = Math.min(activeRun.state.tick + MAX_CHUNK_TICKS, targetTick);
         const chunk = events.filter(
           (event) => event.tick > activeRun.state.tick && event.tick <= untilTick,
         );
         const result = await uploader.upload(activeRun, untilTick, chunk);
         if (disposed || generation !== currentGeneration) return;
         run = result;
+        render();
         events = events.filter((event) => event.tick > result.state.tick);
         if (result.status === 'verified') {
           setStatus('Результат проверен. Рекорд учтён в рейтинге.');
-          await saveLocal('tetris-ranked', null);
+          await Promise.all([
+            saveLocal('tetris-ranked', null),
+            saveLocal(`tetris-ranked:${result.id}`, null),
+          ]);
         } else if (result.status === 'unranked') {
           setStatus('Попытка проверена. Для Sprint нужно завершить 40 линий.');
-          await saveLocal('tetris-ranked', null);
+          await Promise.all([
+            saveLocal('tetris-ranked', null),
+            saveLocal(`tetris-ranked:${result.id}`, null),
+          ]);
         } else setStatus('Рейтинговая партия · запись синхронизирована');
       }
       if (run?.status === 'active') await persist();
@@ -156,6 +214,7 @@ export async function mountTetris(
       }
     }
     starting = true;
+    fourLineEffect.reset();
     paused = true;
     started = false;
     const previousRun = run;
@@ -224,6 +283,7 @@ export async function mountTetris(
     uploader.reset();
     if (previousRun?.status === 'active') await api.abandon(previousRun.id).catch(() => {});
     await saveLocal('tetris-ranked', null).catch(() => {});
+    render();
   }
   const pauseButton = button(
     'Пауза',
@@ -245,6 +305,17 @@ export async function mountTetris(
     () => {
       void (async () => {
         try {
+          if (
+            run?.status === 'active' &&
+            state.status !== 'playing' &&
+            run.state.tick < state.tick
+          ) {
+            await sync();
+            if (run?.status === 'active') {
+              setStatus('Дождись отправки результата перед загрузкой другой партии.');
+              return;
+            }
+          }
           const saved = await loadLocal('tetris-practice');
           if (!saved) {
             setStatus('Сохранённой свободной партии пока нет.');
@@ -252,6 +323,7 @@ export async function mountTetris(
           }
           await stopRanked();
           if (disposed) return;
+          fourLineEffect.reset();
           state = decodeTetris(saved);
           mode.value = state.mode;
           events = [];
@@ -296,6 +368,7 @@ export async function mountTetris(
             setStatus('Срок восстановления попытки истёк.');
             return;
           }
+          fourLineEffect.reset();
           state = cloneTetris(remote.state);
           const remaining = localEvents.filter((e) => e.tick > state.tick);
           let index = 0;
@@ -340,11 +413,9 @@ export async function mountTetris(
     'button subtle',
   );
   panel.append(
-    stats,
     mode,
     rankButton,
     freeButton,
-    pauseButton,
     loadButton,
     restoreRanked,
     soundButton,
@@ -355,35 +426,34 @@ export async function mountTetris(
       '← → движение · ↑ поворот · Z обратный поворот · ↓ спуск · пробел сброс · C hold',
     ),
   );
-  const touch = element('div', 'touch-controls');
+  hud.append(pauseButton);
   const repeatable = new Set<TetrisAction>(['left', 'right', 'softDrop']);
-  for (const [label, action] of [
-    ['HOLD', 'hold'],
-    ['↶', 'rotateCCW'],
-    ['←', 'left'],
-    ['↓', 'softDrop'],
-    ['→', 'right'],
-    ['↷', 'rotateCW'],
-    ['DROP', 'hardDrop'],
-  ] as const) {
-    const key = button(label, () => {}, 'touch-key');
-    key.setAttribute('aria-label', label);
-    key.addEventListener(
-      'pointerdown',
-      (event) => {
-        event.preventDefault();
-        key.setPointerCapture(event.pointerId);
-        pending.push(action);
-        if (repeatable.has(action)) held.set(action, 0);
-      },
-      { signal: signal.signal },
-    );
-    for (const name of ['pointerup', 'pointercancel', 'lostpointercapture'] as const)
-      key.addEventListener(name, () => held.delete(action), { signal: signal.signal });
-    touch.append(key);
-  }
-  stage.append(touch);
-  wrap.append(stage, panel);
+  const enqueue = (action: TetrisAction) => {
+    if (started && !paused && state.status === 'playing' && pending.length < 24)
+      pending.push(action);
+  };
+  const gestureTools = element('div', 'tetris-gesture-tools');
+  gestureTools.append(
+    element(
+      'p',
+      'control-hint gesture-help',
+      'Тап — поворот · удержание — ускорение\nСвайп ← → — движение · резко вниз — сброс',
+    ),
+  );
+  hud.append(button('HOLD', () => enqueue('hold'), 'touch-key hold-button'));
+  canvas.setAttribute(
+    'aria-description',
+    'Тап — поворот. Удержание — ускоренное падение. Свайпы влево и вправо — движение, быстрый свайп вниз — сброс. Также доступна клавиатура.',
+  );
+  stage.append(gestureTools);
+  gestureInput = mountTetrisGestures(canvas, {
+    enabled: () => started && !paused && !disposed && state.status === 'playing',
+    action: enqueue,
+    softDrop: (pressed) => {
+      gestureSoftDrop = pressed;
+    },
+  });
+  wrap.append(stage, hud, panel);
   host.container.append(wrap);
   const keyMap: Record<string, TetrisAction> = {
     ArrowLeft: 'left',
@@ -398,13 +468,17 @@ export async function mountTetris(
   window.addEventListener(
     'keydown',
     (event) => {
-      if (event.target instanceof HTMLSelectElement || event.target instanceof HTMLInputElement)
+      if (
+        event.target instanceof HTMLSelectElement ||
+        event.target instanceof HTMLInputElement ||
+        event.target instanceof HTMLButtonElement
+      )
         return;
       const action = keyMap[event.code];
       if (!action) return;
       event.preventDefault();
       if (event.repeat) return;
-      pending.push(action);
+      enqueue(action);
       if (repeatable.has(action)) held.set(action, 0);
     },
     { signal: signal.signal },
@@ -414,14 +488,27 @@ export async function mountTetris(
     (event) => {
       const action = keyMap[event.code];
       if (action) {
-        event.preventDefault();
         held.delete(action);
+        if (
+          !(
+            event.target instanceof HTMLButtonElement ||
+            event.target instanceof HTMLInputElement ||
+            event.target instanceof HTMLSelectElement
+          )
+        )
+          event.preventDefault();
       }
     },
     { signal: signal.signal },
   );
   const pause = () => {
     clearInput();
+    if (started && state.status !== 'playing') {
+      // A completed game awaiting an acknowledgement must never be abandoned on blur.
+      void persist().catch(() => {});
+      void sync();
+      return;
+    }
     if (started) {
       paused = true;
       pauseButton.textContent = 'Продолжить';
@@ -444,6 +531,7 @@ export async function mountTetris(
     if (disposed) return;
     const elapsed = Math.min(250, Math.max(0, now - previous));
     previous = now;
+    gestureInput?.update(now);
     if (started && !paused && state.status === 'playing') {
       accumulator += elapsed;
       while (accumulator >= 1000 / 60 && state.status === 'playing') {
@@ -457,18 +545,25 @@ export async function mountTetris(
           )
             pending.push(action);
         }
+        if (gestureSoftDrop && !held.has('softDrop') && state.tick % 2 === 0) enqueue('softDrop');
         const actions = pending.splice(0, 4);
-        pending.length = 0;
         const before = state.lines;
         if (run) for (const action of actions) events.push({ tick: state.tick + 1, action });
         stepTetris(state, actions);
+        if (state.lines - before === 4) fourLineEffect.play();
         if (state.lines > before) audio.play('clear');
         else if (actions.includes('hardDrop')) audio.play('drop');
         if (state.status !== 'playing') {
           audio.play('end');
           clearInput();
           mode.disabled = false;
-          setStatus(run ? 'Партия завершена. Проверяем результат…' : 'Партия завершена. Ещё одну?');
+          setStatus(
+            run
+              ? 'Партия завершена. Проверяем результат…'
+              : 'Свободная партия завершена. Этот результат не попадает в рейтинг.',
+          );
+          void persist().catch(() => {});
+          void sync();
         }
       }
       render();
@@ -498,6 +593,8 @@ export async function mountTetris(
       disposed = true;
       generation++;
       uploader.reset();
+      fourLineEffect.dispose();
+      gestureInput?.dispose();
       signal.abort();
       cancelAnimationFrame(frame);
       audio.dispose();

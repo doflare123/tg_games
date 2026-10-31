@@ -1,4 +1,4 @@
-import type { Player } from '../../shared/contracts.ts';
+import type { LeaderboardView, Player } from '../../shared/contracts.ts';
 import { AppError, object } from '../../shared/errors.ts';
 import { type GroupView, groupId } from '../../shared/groups.ts';
 import type { SocialRepository } from './social-repository.ts';
@@ -37,7 +37,7 @@ export class GroupService {
     };
   }
   async list(player: Player): Promise<GroupView[]> {
-    const groups = await this.repository.groupsFor(player.id);
+    const groups = await this.repository.groupCandidates(player.id);
     const result: GroupView[] = [];
     // Bound platform calls per invocation; no group names are returned before membership verification.
     for (let start = 0; start < groups.length; start += 4) {
@@ -58,6 +58,39 @@ export class GroupService {
       for (const group of batch) if (group) result.push(group);
     }
     return result;
+  }
+  async synchronize(
+    id: number,
+  ): Promise<{ state: NonNullable<LeaderboardView['membershipSync']>; checkedSince: number }> {
+    const group = await this.repository.group(groupId(id));
+    if (!group?.active || !group.botAdmin)
+      throw new AppError('UNAVAILABLE', 'Для группового рейтинга сделай бота администратором');
+    const checkedSince = this.now() - 15 * 60_000;
+    const candidates = await this.repository.membersToRefresh(id, checkedSince, 25);
+    let failed = false;
+    // The membership rows are also a durable progress cursor: later calls skip fresh checks.
+    const batch = candidates.slice(0, 24);
+    for (let start = 0; start < batch.length; start += 4) {
+      await Promise.all(
+        batch.slice(start, start + 4).map(async (userId) => {
+          try {
+            const member = await this.telegram.member(id, userId);
+            await this.repository.observeMember({
+              chatId: id,
+              userId,
+              active: member.active,
+              updatedAt: this.now(),
+            });
+          } catch {
+            failed = true;
+          }
+        }),
+      );
+    }
+    return {
+      state: failed ? 'failed' : candidates.length > 24 ? 'pending' : 'complete',
+      checkedSince,
+    };
   }
   async snapshot(player: Player): Promise<number[]> {
     return (await this.list(player)).map((group) => group.id);

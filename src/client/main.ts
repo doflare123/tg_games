@@ -1,4 +1,4 @@
-import { parseLaunch } from '../shared/launch.ts';
+import { type LaunchTarget, parseLaunch } from '../shared/launch.ts';
 import { mountLeaderboard } from './ui/leaderboard.ts';
 import './styles.css';
 import type { TetrisMode } from '../games/tetris/types.ts';
@@ -46,7 +46,9 @@ footer.append(
 );
 root.append(header, content, footer);
 let disposeBoard: (() => void) | null = null;
-let activeDialog: HTMLDialogElement | null = null;
+let disposeGame: (() => void) | null = null;
+let currentView: LaunchTarget = { view: 'catalog' };
+const navigationSession = crypto.randomUUID();
 brand.addEventListener('click', (event) => {
   event.preventDefault();
   showCatalog();
@@ -97,6 +99,32 @@ function preview(game: GameInfo): HTMLElement {
       blocks.append(block);
     });
     visual.append(blocks, element('span', 'preview-watermark', '40 LINES'));
+  } else if (game.id === 'minesweeper') {
+    const blocks = element('div', 'mine-preview-grid');
+    for (const value of [
+      '1',
+      '',
+      '⚑',
+      '',
+      '',
+      '2',
+      '1',
+      '',
+      '',
+      '1',
+      '',
+      '',
+      '⚑',
+      '2',
+      '',
+      '',
+      '',
+      '',
+      '1',
+      '',
+    ])
+      blocks.append(element('span', value ? 'open' : '', value));
+    visual.append(blocks, element('span', 'preview-watermark', 'CLEAR THE FIELD'));
   } else if (game.id === 'mario') {
     visual.append(
       element('div', 'pixel-cloud cloud-one'),
@@ -117,9 +145,7 @@ function preview(game: GameInfo): HTMLElement {
   }
   return visual;
 }
-function showCatalog(): void {
-  disposeBoard?.();
-  disposeBoard = null;
+function renderCatalog(): void {
   tabs(false);
   content.replaceChildren();
   const hero = element('section', 'hero');
@@ -137,7 +163,11 @@ function showCatalog(): void {
     );
   }
   intro.append(
-    element('p', 'hero-description', 'Тетрис. Три режима.\nСобирай линии и поднимайся в рейтинге.'),
+    element(
+      'p',
+      'hero-description',
+      'Тетрис и Сапёр.\nСобирай линии, обходи мины и побей свой рекорд.',
+    ),
   );
   const actions = element('div', 'hero-actions');
   actions.append(
@@ -170,7 +200,7 @@ function showCatalog(): void {
   const sectionHead = element('div', 'section-heading');
   sectionHead.append(
     element('h2', '', 'ВЫБИРАЙ СВОЮ ИГРУ'),
-    element('span', 'eyebrow', '03 MODES / ∞ ATTEMPTS'),
+    element('span', 'eyebrow', '02 GAMES / ∞ ATTEMPTS'),
   );
   const grid = element('div', 'games-grid');
   CATALOG.forEach((game, index) => {
@@ -209,48 +239,104 @@ function showCatalog(): void {
   );
   content.append(hero, section, note);
 }
-async function showLeaderboard(initialGroupId?: number): Promise<void> {
-  tabs(true);
-  disposeBoard?.();
-  disposeBoard = mountLeaderboard(content, initialGroupId);
+function routeHash(target: LaunchTarget): string {
+  if (target.view === 'game')
+    return `#game_${target.game}${target.game === 'tetris' ? `_${target.mode ?? 'marathon'}` : ''}`;
+  if (target.view === 'leaderboard')
+    return target.groupId ? `#board_${target.groupId}` : '#leaderboard';
+  return '#games';
 }
-async function openGame(
-  game: GameInfo | undefined,
-  initialMode: TetrisMode = 'marathon',
-): Promise<void> {
-  if (!game?.available || activeDialog) return;
-  const dialog = element('dialog', 'game-dialog');
-  dialog.setAttribute('aria-label', game.title);
-  activeDialog = dialog;
-  const head = element('div', 'dialog-header');
-  head.append(element('strong', '', game.title));
-  const body = element('div', 'dialog-body');
+function navigate(target: LaunchTarget, replace = false): void {
+  const fromGame = currentView.view === 'game';
+  if (!replace && location.hash === routeHash(target)) return;
+  const state = { arcadeSession: navigationSession, fromArcade: !replace };
+  if (replace) history.replaceState(state, '', routeHash(target));
+  else history.pushState(state, '', routeHash(target));
+  renderPage(target, fromGame);
+}
+function showCatalog(): void {
+  navigate({ view: 'catalog' });
+}
+function showLeaderboard(groupId?: number): void {
+  navigate({ view: 'leaderboard', ...(groupId === undefined ? {} : { groupId }) });
+}
+function openGame(game: GameInfo | undefined, initialMode: TetrisMode = 'marathon'): void {
+  if (game?.available) navigate({ view: 'game', game: game.id, mode: initialMode });
+}
+function renderPage(target: LaunchTarget, restoreFocus = false): void {
+  const previousGame = currentView.view === 'game' ? currentView.game : undefined;
+  disposeGame?.();
+  disposeGame = null;
+  disposeBoard?.();
+  disposeBoard = null;
+  currentView = target;
+  content.replaceChildren();
+  document.body.classList.toggle('playing-game', target.view === 'game');
+  content.classList.toggle('game-main', target.view === 'game');
+  window.scrollTo({ top: 0, behavior: 'instant' });
+  document.title = 'Arcade — игры в Telegram';
+  if (target.view === 'game') {
+    const game = CATALOG.find((game) => game.id === target.game && game.available);
+    if (game) void mountGamePage(game, target.mode ?? 'marathon');
+    else navigate({ view: 'catalog' }, true);
+  } else if (target.view === 'leaderboard') {
+    tabs(true);
+    disposeBoard = mountLeaderboard(content, target.groupId);
+  } else {
+    renderCatalog();
+    if (restoreFocus && previousGame)
+      content
+        .querySelector<HTMLButtonElement>(
+          `[aria-label="Играть: ${CATALOG.find((game) => game.id === previousGame)?.title}"]`,
+        )
+        ?.focus({ preventScroll: true });
+  }
+}
+async function mountGamePage(game: GameInfo, initialMode: TetrisMode): Promise<void> {
+  tabs(false);
+  document.title = `${game.title} — Arcade`;
+  const page = element('section', 'game-page');
+  page.setAttribute('aria-label', game.title);
+  const head = element('header', 'game-page-header');
+  const title = element('h1', '', game.title);
+  title.tabIndex = -1;
+  const body = element('div', 'game-page-body');
   body.append(element('p', 'empty-state', 'Загружаем игру…'));
   let adapter: GameAdapter | null = null;
   let closed = false;
   const close = () => {
-    if (!closed) dialog.close();
+    if (closed) return;
+    const state: unknown = history.state;
+    if (
+      state &&
+      typeof state === 'object' &&
+      'arcadeSession' in state &&
+      state.arcadeSession === navigationSession &&
+      'fromArcade' in state &&
+      state.fromArcade === true
+    )
+      history.back();
+    else navigate({ view: 'catalog' }, true);
   };
-  head.append(button('Закрыть ×', close, 'close-button'));
-  dialog.append(head, body);
-  document.body.append(dialog);
-  const back = inTelegram ? telegram?.BackButton : undefined;
-  dialog.addEventListener(
-    'close',
-    () => {
-      if (closed) return;
-      closed = true;
-      adapter?.dispose();
-      back?.offClick(close);
-      back?.hide();
-      dialog.remove();
-      activeDialog = null;
-    },
-    { once: true },
+  head.append(
+    button('← Назад', close, 'back-button'),
+    title,
+    element('span', 'eyebrow', 'ARCADE / PLAY'),
   );
+  page.append(head, body);
+  content.append(page);
+  const back = inTelegram ? telegram?.BackButton : undefined;
+  disposeGame = () => {
+    if (closed) return;
+    closed = true;
+    adapter?.dispose();
+    back?.offClick(close);
+    back?.hide();
+    page.remove();
+  };
   back?.onClick(close);
   back?.show();
-  dialog.showModal();
+  title.focus({ preventScroll: true });
   try {
     const host = { container: body, onClose: close };
     const mount =
@@ -259,9 +345,11 @@ async function openGame(
             import('./games/tetris/controller.ts').then((module) =>
               module.mountTetris(host, initialMode),
             )
-        : game.id === 'mario'
-          ? (await import('./games/mario/adapter.ts')).mountMario
-          : (await import('./games/doom/adapter.ts')).mountDoom;
+        : game.id === 'minesweeper'
+          ? (await import('./games/minesweeper/controller.ts')).mountMinesweeper
+          : game.id === 'mario'
+            ? (await import('./games/mario/adapter.ts')).mountMario
+            : (await import('./games/doom/adapter.ts')).mountDoom;
     if (closed) return;
     body.replaceChildren();
     adapter = await mount(host);
@@ -270,11 +358,10 @@ async function openGame(
     if (!closed) body.replaceChildren(element('p', 'empty-state', errorMessage(error)));
   }
 }
-const launch = parseLaunch(
-  telegram?.initDataUnsafe.start_param ?? new URLSearchParams(location.search).get('startapp'),
-);
-if (launch.view === 'leaderboard') void showLeaderboard(launch.groupId);
-else {
-  showCatalog();
-  if (launch.view === 'game') void openGame(CATALOG.find((game) => game.id === launch.game));
-}
+window.addEventListener('popstate', () => renderPage(parseLaunch(location.hash.slice(1)), true));
+const launch = location.hash
+  ? parseLaunch(location.hash.slice(1))
+  : parseLaunch(
+      telegram?.initDataUnsafe.start_param ?? new URLSearchParams(location.search).get('startapp'),
+    );
+navigate(launch, true);

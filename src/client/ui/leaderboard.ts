@@ -2,13 +2,40 @@ import type { TetrisMode } from '../../games/tetris/types.ts';
 import type { GroupView } from '../../shared/groups.ts';
 import { api, hasApi } from '../platform/api.ts';
 import { button, element, errorMessage, formatTime } from './dom.ts';
+import { mountMineLeaderboard } from './mine-leaderboard.ts';
 export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): () => void {
+  const picker = element('select', 'select');
+  picker.setAttribute('aria-label', 'Игра рейтинга');
+  for (const [value, label] of [
+    ['tetris', 'Тетрис'],
+    ['minesweeper', 'Сапёр'],
+  ]) {
+    const option = element('option', '', label);
+    option.value = value ?? 'tetris';
+    picker.append(option);
+  }
+  const filters = element('div', 'board-game-picker');
+  filters.append(picker);
+  const content = element('div');
+  host.replaceChildren(filters, content);
+  let dispose = mountTetrisLeaderboard(content, initialGroupId);
+  picker.addEventListener('change', () => {
+    dispose();
+    dispose =
+      picker.value === 'minesweeper'
+        ? mountMineLeaderboard(content)
+        : mountTetrisLeaderboard(content, initialGroupId);
+  });
+  return () => dispose();
+}
+function mountTetrisLeaderboard(host: HTMLElement, initialGroupId?: number): () => void {
   let disposed = false;
   let request = 0;
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let knownGroups: GroupView[] = [];
   const section = element('section', 'leaderboard-section');
   section.append(
-    element('span', 'eyebrow', 'TETRIS / VERIFIED RUNS'),
+    element('span', 'eyebrow', 'TETRIS / LEADERBOARD'),
     element('h1', 'board-title', 'ТАБЛИЦА\nРЕКОРДОВ.'),
   );
   const filters = element('div', 'board-filters');
@@ -54,17 +81,20 @@ export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): ()
   );
   const status = element('p', 'board-status');
   status.setAttribute('role', 'status');
+  const membershipStatus = element('p', 'control-hint');
+  membershipStatus.setAttribute('role', 'status');
   const results = element('div', 'board-results');
   section.append(
     filters,
     notification,
     note,
     status,
+    membershipStatus,
     results,
     element(
       'p',
       'control-hint',
-      'Лучшая проверенная попытка каждого игрока. Неделя начинается в понедельник, UTC. Новые партии учитываются в группах, подключённых на момент старта.',
+      'Лучший результат каждого игрока. «Вручную» — корректировка администратора без replay; ≈ — приблизительный счёт. Неделя начинается в понедельник, UTC. В группе видны лучшие результаты её участников, в том числе сыгранные до подключения бота.',
     ),
   );
   host.replaceChildren(section);
@@ -87,7 +117,7 @@ export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): ()
       knownGroups = knownGroups.map((g) => (g.id === updated.id ? updated : g));
       refreshSettings();
       status.textContent = updated.notificationsEnabled
-        ? 'Объявления включены: обгон соперника и улучшение места в топ-10, не чаще раза за 5 минут.'
+        ? 'Объявления включены: первый и новый рекорд группы или обгон в её топ-10, не чаще раза за 5 минут. Глобальные места не учитываются.'
         : 'Объявления выключены.';
     } catch (error) {
       if (!disposed) status.textContent = errorMessage(error);
@@ -96,6 +126,9 @@ export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): ()
     }
   }
   async function update() {
+    clearTimeout(refreshTimer);
+    refreshTimer = undefined;
+    membershipStatus.replaceChildren();
     const current = ++request;
     refreshSettings();
     results.replaceChildren(element('p', 'empty-state', 'Загружаем рекорды…'));
@@ -108,12 +141,36 @@ export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): ()
       );
       if (disposed || current !== request) return;
       results.replaceChildren();
+      if (board.membershipSync === 'pending') {
+        membershipStatus.textContent =
+          'Сверяем участников через Telegram. Показаны уже подтверждённые результаты; таблица обновится автоматически.';
+        refreshTimer = setTimeout(() => {
+          void update();
+        }, 1500);
+      } else if (board.membershipSync === 'failed') {
+        membershipStatus.append(
+          document.createTextNode(
+            'Не удалось сверить часть участников. Показаны только подтверждённые результаты. ',
+          ),
+          button(
+            'Повторить сверку',
+            () => {
+              void update();
+            },
+            'text-button',
+          ),
+        );
+      }
       if (!board.entries.length) {
         results.append(
           element(
             'div',
             'empty-state',
-            'Первый рекорд ещё впереди. Сыграй рейтинговую партию в Тетрис.',
+            board.membershipSync === 'pending'
+              ? 'Сверяем участников и загружаем их рекорды…'
+              : board.membershipSync === 'failed'
+                ? 'Пока нет подтверждённых результатов. Повтори сверку участников.'
+                : 'Первый рекорд ещё впереди. Сыграй рейтинговую партию в Тетрис.',
           ),
         );
         return;
@@ -129,8 +186,12 @@ export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): ()
         const row = element('tr', entry.playerId === board.me?.playerId ? 'own-record' : '');
         for (const value of [
           String(entry.rank).padStart(2, '0'),
-          entry.name,
-          board.mode === 'sprint' ? formatTime(entry.ticks) : entry.score.toLocaleString('ru-RU'),
+          `${entry.name}${entry.source === 'manual' ? ' · вручную' : ''}`,
+          board.mode === 'sprint'
+            ? entry.durationKnown
+              ? formatTime(entry.ticks)
+              : '—'
+            : `${entry.approximate ? '≈' : ''}${entry.score.toLocaleString('ru-RU')}`,
           String(entry.lines),
         ])
           row.append(element('td', '', value));
@@ -143,7 +204,7 @@ export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): ()
           element(
             'p',
             'personal-record',
-            `Твоё место: ${board.me.rank} · ${board.mode === 'sprint' ? formatTime(board.me.ticks) : board.me.score.toLocaleString('ru-RU')}`,
+            `Твоё место: ${board.me.rank} · ${board.mode === 'sprint' ? (board.me.durationKnown ? formatTime(board.me.ticks) : '—') : `${board.me.approximate ? '≈' : ''}${board.me.score.toLocaleString('ru-RU')}`}`,
           ),
         );
     } catch (error) {
@@ -192,6 +253,7 @@ export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): ()
   if (initialGroupId === undefined) void update();
   return () => {
     disposed = true;
+    clearTimeout(refreshTimer);
     request++;
   };
 }

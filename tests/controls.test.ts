@@ -30,6 +30,14 @@ it('supports diagonals, dead zones and deterministic direct-game routing', () =>
   expect(parseLaunch('game_doom')).toEqual({ view: 'catalog' });
   expect(parseLaunch('game_mario')).toEqual({ view: 'catalog' });
   expect(parseLaunch('game_tetris')).toEqual({ view: 'game', game: 'tetris' });
+  expect(parseLaunch('game_minesweeper')).toEqual({ view: 'game', game: 'minesweeper' });
+  expect(parseLaunch('game_tetris_sprint')).toEqual({
+    view: 'game',
+    game: 'tetris',
+    mode: 'sprint',
+  });
+  expect(parseLaunch('game_tetris_ultra')).toEqual({ view: 'game', game: 'tetris', mode: 'ultra' });
+  expect(parseLaunch('game_tetris_bad')).toEqual({ view: 'catalog' });
   expect(parseLaunch('board_-100001')).toEqual({ view: 'leaderboard', groupId: -100001 });
   expect(parseLaunch('board_10')).toEqual({ view: 'catalog' });
   expect(launchUrl('arcade_bot', 'game_doom')).toBe('https://t.me/arcade_bot?startapp=game_doom');

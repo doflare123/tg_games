@@ -27,3 +27,11 @@ export function formatTime(ticks: number): string {
     .toString()
     .padStart(2, '0')}:${(seconds % 60).toFixed(2).padStart(5, '0')}`;
 }
+export function formatMineTime(ms: number): string {
+  const centiseconds = Math.floor(ms / 10);
+  return `${Math.floor(centiseconds / 6000)
+    .toString()
+    .padStart(2, '0')}:${Math.floor((centiseconds % 6000) / 100)
+    .toString()
+    .padStart(2, '0')}.${(centiseconds % 100).toString().padStart(2, '0')}`;
+}

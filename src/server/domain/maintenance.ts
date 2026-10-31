@@ -1,5 +1,6 @@
 import { MODES } from '../../games/tetris/types.ts';
 import { AppError, object, oneOf } from '../../shared/errors.ts';
+import { launchUrl } from '../../shared/launch.ts';
 import type { GroupService } from './groups.ts';
 import { recordNotification } from './record-notification.ts';
 import type { ArcadeRepository, StoredRun } from './repository.ts';
@@ -29,14 +30,19 @@ export class MaintenanceService {
           continue;
         throw error;
       }
+      const sync = await this.groups.synchronize(groupId);
+      if (sync.state !== 'complete')
+        throw new AppError('UNAVAILABLE', 'Обновляется состав группы; объявление отложено');
       const player = { id: run.playerId, name: run.playerName };
       const before = await this.arcade.leaderboard(player, run.mode, 'all', 0, {
         groupId,
         maxVerifiedOrder: run.verifiedOrder - 1,
+        membershipCheckedSince: sync.checkedSince,
       });
       const after = await this.arcade.leaderboard(player, run.mode, 'all', 0, {
         groupId,
         maxVerifiedOrder: run.verifiedOrder,
+        membershipCheckedSince: sync.checkedSince,
       });
       const message = recordNotification(run, before, after);
       if (message)
@@ -83,12 +89,15 @@ export class MaintenanceService {
         return;
       }
       await this.groups.access({ id: payload.playerId, name: 'Игрок' }, payload.chatId);
+      const sync = await this.groups.synchronize(payload.chatId);
+      if (sync.state !== 'complete')
+        throw new AppError('UNAVAILABLE', 'Обновляется состав группы; отправка отложена');
       const board = await this.arcade.leaderboard(
         { id: payload.playerId, name: 'Игрок' },
         oneOf(payload.mode, MODES),
         'all',
         0,
-        { groupId: payload.chatId },
+        { groupId: payload.chatId, membershipCheckedSince: sync.checkedSince },
       );
       if (
         !board.me ||
@@ -99,7 +108,25 @@ export class MaintenanceService {
         await this.repository.complete(job, 'suppressed', 'Cooldown or superseded record');
         return;
       }
-      await this.telegram.send({ chat_id: payload.chatId, text: payload.text });
+      const me = await this.telegram.me();
+      await this.telegram.send({
+        chat_id: payload.chatId,
+        text: `${payload.text}\n\nХочешь побить рекорд? Заходи играть!`,
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: '🎮 Побить рекорд',
+                url: launchUrl(
+                  me.username,
+                  `game_tetris_${payload.mode}`,
+                  me.hasMainMiniApp ? 'startapp' : 'start',
+                ),
+              },
+            ],
+          ],
+        },
+      });
       await this.repository.complete(job, 'done');
     } catch (error) {
       let code = 0;

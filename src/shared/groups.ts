@@ -23,6 +23,7 @@ export interface Membership {
 export interface BoardScope {
   groupId?: number;
   maxVerifiedOrder?: number;
+  membershipCheckedSince?: number;
 }
 export function groupId(value: unknown): number {
   return integer(value, -Number.MAX_SAFE_INTEGER, -1);

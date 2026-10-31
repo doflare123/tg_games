@@ -26,7 +26,8 @@ export interface SocialRepository {
   group(id: number): Promise<GroupRecord | null>;
   activeGroupIds(): Promise<number[]>;
   observeMember(member: Membership): Promise<void>;
-  groupsFor(userId: number): Promise<GroupRecord[]>;
+  groupCandidates(userId: number): Promise<GroupRecord[]>;
+  membersToRefresh(chatId: number, checkedSince: number, limit: number): Promise<number[]>;
   notifications(chatId: number, enabled: boolean, now: number): Promise<void>;
   reserveAnnouncement(chatId: number, now: number, jobId: string): Promise<boolean>;
   enqueue(job: SocialJob): Promise<void>;

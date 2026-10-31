@@ -5,6 +5,7 @@ import { integer, object, text } from '../../shared/errors.ts';
 import type { BoardScope } from '../../shared/groups.ts';
 import { decodeEntry, decodeRun } from '../../shared/validation.ts';
 import type { ArcadeRepository, StoredRun } from '../domain/repository.ts';
+import { NEXT_RESULT_ORDER } from './manual-results-ddl.ts';
 import { returnedRows } from './sql-write.ts';
 export type SqlValue = string | number | null;
 export type SqlParameters = Record<string, SqlValue>;
@@ -91,7 +92,7 @@ export class SqlArcadeRepository implements ArcadeRepository {
     const updated = await this.db.run(
       `UPDATE runs SET revision=:revision,status=:status,state_json=:state,
       score=:score,ticks=:ticks,lines=:lines,last_submission=:submission,verified_at=:verifiedAt,
-      verified_order=CASE WHEN :status='verified' THEN (SELECT COALESCE(MAX(verified_order),0)+1 FROM runs) ELSE verified_order END
+      verified_order=CASE WHEN :status='verified' THEN ${NEXT_RESULT_ORDER} ELSE verified_order END
       WHERE id=:id AND revision=:expected RETURNING id`,
       {
         ':id': run.id,
@@ -125,12 +126,20 @@ export class SqlArcadeRepository implements ArcadeRepository {
     scope: BoardScope = {},
   ): Promise<LeaderboardView> {
     // Only this enum-controlled expression is interpolated; all external data is bound.
-    const order = mode === 'sprint' ? 'ticks ASC, score DESC' : 'score DESC, ticks ASC';
+    const order =
+      mode === 'sprint'
+        ? 'COALESCE(ticks,108001) ASC, score DESC'
+        : 'score DESC, COALESCE(ticks,108001) ASC';
     const result = await this.db.all(
-      `WITH attempts AS (
-      SELECT id,player_id,player_name,score,ticks,lines,created_at, row_number() OVER (PARTITION BY player_id ORDER BY ${order},created_at ASC,id ASC) AS personal
-      FROM runs WHERE status='verified' AND mode=:mode AND ruleset=:ruleset AND created_at>=:since
-      AND (:groupId IS NULL OR EXISTS(SELECT 1 FROM json_each(runs.group_ids_json) WHERE value=:groupId))
+      `WITH results AS (
+      SELECT id,player_id,player_name,mode,ruleset,score,ticks,lines,created_at,group_ids_json,verified_order,'verified' AS source,0 AS approximate
+      FROM runs WHERE status='verified'
+      UNION ALL
+      SELECT id,player_id,player_name,mode,ruleset,score,ticks,lines,created_at,group_ids_json,verified_order,'manual' AS source,approximate FROM manual_results
+    ), attempts AS (
+      SELECT *,row_number() OVER (PARTITION BY player_id ORDER BY ${order},created_at ASC,id ASC) AS personal
+      FROM results WHERE mode=:mode AND ruleset=:ruleset AND created_at>=:since
+      AND (:groupId IS NULL OR EXISTS(SELECT 1 FROM group_memberships gm WHERE gm.group_id=:groupId AND gm.user_id=results.player_id AND gm.active=1 AND gm.updated_at>=:membersSince))
       AND (:maxOrder IS NULL OR verified_order<=:maxOrder)
     ), ranked AS (
       SELECT *,row_number() OVER (ORDER BY ${order},created_at ASC,id ASC) AS place FROM attempts WHERE personal=1
@@ -141,6 +150,7 @@ export class SqlArcadeRepository implements ArcadeRepository {
         ':since': since,
         ':player': player.id,
         ':groupId': scope.groupId ?? null,
+        ':membersSince': scope.membershipCheckedSince ?? 0,
         ':maxOrder': scope.maxVerifiedOrder ?? null,
       },
     );
@@ -152,7 +162,10 @@ export class SqlArcadeRepository implements ArcadeRepository {
         playerId: r.player_id,
         name: r.player_name,
         score: r.score,
-        ticks: r.ticks,
+        ticks: r.ticks ?? 0,
+        durationKnown: r.ticks !== null,
+        source: r.source,
+        approximate: r.approximate === 1,
         lines: r.lines,
         runId: r.id,
       });

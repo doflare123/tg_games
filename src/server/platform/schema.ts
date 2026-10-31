@@ -1,4 +1,25 @@
 import { index, integer, table, text } from 'sdk/db';
+export const minesweeperRuns = table(
+  'minesweeper_runs',
+  {
+    id: text('id').primaryKey(),
+    playerId: integer('player_id').notNull(),
+    playerName: text('player_name').notNull(),
+    ruleset: text('ruleset').notNull(),
+    size: text('size').notNull(),
+    revision: integer('revision').notNull(),
+    stateJson: text('state_json').notNull(),
+    status: text('status').notNull(),
+    firstCell: integer('first_cell').notNull(),
+    startedAt: integer('started_at').notNull(),
+    elapsedMs: integer('elapsed_ms').notNull(),
+    lastAction: text('last_action'),
+  },
+  (t) => ({
+    leaderboard: index('minesweeper_leaderboard').on(t.size, t.ruleset, t.status, t.elapsedMs),
+    recent: index('minesweeper_recent').on(t.playerId, t.startedAt),
+  }),
+);
 export const runs = table(
   'runs',
   {
@@ -76,4 +97,27 @@ export const socialJobs = table(
     error: text('error'),
   },
   (t) => ({ due: index('social_jobs_due').on(t.status, t.dueAt, t.leaseUntil) }),
+);
+
+export const manualResults = table(
+  'manual_results',
+  {
+    id: text('id').primaryKey(),
+    playerId: integer('player_id').notNull(),
+    playerName: text('player_name').notNull(),
+    mode: text('mode').notNull(),
+    ruleset: text('ruleset').notNull(),
+    score: integer('score').notNull(),
+    ticks: integer('ticks'),
+    lines: integer('lines').notNull(),
+    groupIdsJson: text('group_ids_json').notNull(),
+    createdAt: integer('created_at').notNull(),
+    verifiedOrder: integer('verified_order').notNull(),
+    reason: text('reason').notNull(),
+    operator: text('operator').notNull(),
+    approximate: integer('approximate').notNull(),
+  },
+  (t) => ({
+    leaderboard: index('manual_results_leaderboard').on(t.mode, t.ruleset, t.score, t.ticks),
+  }),
 );

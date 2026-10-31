@@ -45,6 +45,18 @@ These checks do not establish actual Telegram runtime quotas, migration behavior
 1. Link the new test bot through the CLI, deploy and migrate explicitly; test endpoints and update handlers inside Telegram.
 2. Measure invocation limits, database capacity and latency at expected concurrency. Exercise SQL RETURNING and window queries on the real platform.
 3. Freeze original Mario/Doom content revisions and metric extraction rules. Prove headless replay compatibility before enabling their ranked modes.
-4. Group scopes and notifications are implemented; verify the native ephemeral API and membership updates on a live bot. Add seasons, history UI and invalidation tools. See groups-and-controls.md for the access and snapshot policy.
+4. Group scopes and notifications are implemented; verify the native ephemeral API and membership updates on a live bot. Add seasons, history UI and invalidation tools. See groups-and-controls.md for the membership and notification policy.
 5. Define retention/cleanup and backups for abandoned runs and replay archives before public rollout. This first version does not silently delete player records.
 6. Add Doom MIDI patches, further touch ergonomics, target-device performance checks and accessibility passes before calling the original-game integrations complete.
+
+## Administrative recovery and lifecycle
+
+Manual corrections are stored in manual_results separately from replay-verified runs, with operator, reason, approximation flag and nullable duration. They participate in the same personal-best/global/group query and atomic result ordering, are labelled manual in the UI, and never create notifications. Unknown durations lose score ties to known durations; Sprint requires known time. The service CLI endpoint refuses Mini App contexts. A correction id is immutable and idempotent.
+
+A completed game awaiting upload is never abandoned by blur/visibility changes. Sync freezes the target tick before awaiting transport, so the upload loop cannot chase new frames indefinitely. Final snapshots are persisted immediately, with per-run backup keys as well as the latest-save key. Live-game pause still ends eligibility and the UI explicitly labels practice mode.
+
+## Group rankings from existing records
+
+Group boards filter the same verified/manual result union by confirmed current group_memberships, independent of each run's historical group_ids_json. Membership discovery checks known connected groups for the caller, and scans known players with finished results in bounded batches (24, concurrency 4). Cached membership rows are the durable progress cursor with a 15-minute freshness window. The UI distinguishes complete, pending and failed synchronization; pending requests resume automatically, failures require a retry. Caller access is always checked afresh. Chat member events update one group without changing global scores.
+
+The immutable group_ids_json field remains the recipient eligibility snapshot for announcements only. Membership synchronization never reprocesses results or creates social jobs. New-result announcements wait for a complete membership baseline and recheck it at delivery.

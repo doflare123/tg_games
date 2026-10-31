@@ -2,6 +2,7 @@ import type { TetrisMode } from '../../games/tetris/types.ts';
 import type { EndpointInput, EndpointName, Player, ReplayInput } from '../../shared/contracts.ts';
 import { AppError, integer, object, oneOf, text } from '../../shared/errors.ts';
 import { decodeGroup } from '../../shared/groups.ts';
+import { decodeMineLeaderboard, decodeMineRun } from '../../shared/minesweeper.ts';
 import { decodeLeaderboard, decodeRun } from '../../shared/validation.ts';
 import { inTelegram, telegram } from './telegram.ts';
 export const hasApi = inTelegram || import.meta.env.DEV;
@@ -59,6 +60,15 @@ async function call<K extends EndpointName>(name: K, input: EndpointInput<K>): P
   throw new AppError('UNAUTHORIZED', 'Рейтинговая игра доступна внутри Telegram');
 }
 export const api = {
+  async createMine(input: EndpointInput<'createMineRun'>) {
+    return decodeMineRun(await call('createMineRun', input));
+  },
+  async moveMine(input: EndpointInput<'moveMineRun'>) {
+    return decodeMineRun(await call('moveMineRun', input));
+  },
+  async mineLeaderboard(input: EndpointInput<'getMineLeaderboard'>) {
+    return decodeMineLeaderboard(await call('getMineLeaderboard', input));
+  },
   async profile(): Promise<Player> {
     const p = object(await call('getProfile', {}));
     return { id: integer(p.id, 1, Number.MAX_SAFE_INTEGER), name: text(p.name, 1, 100) };

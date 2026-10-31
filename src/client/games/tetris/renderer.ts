@@ -1,6 +1,12 @@
 import { ghostPiece } from '../../../games/tetris/engine.ts';
 import { cells } from '../../../games/tetris/pieces.ts';
-import { type Cell, HIDDEN_ROWS, type TetrisState, WIDTH } from '../../../games/tetris/types.ts';
+import {
+  type Cell,
+  HIDDEN_ROWS,
+  type PieceKind,
+  type TetrisState,
+  WIDTH,
+} from '../../../games/tetris/types.ts';
 
 const COLORS: Record<Exclude<Cell, null>, string> = {
   I: '#6dd9ed',
@@ -11,6 +17,44 @@ const COLORS: Record<Exclude<Cell, null>, string> = {
   J: '#7e9fe5',
   L: '#efa46e',
 };
+const SHAPE_NAMES: Record<PieceKind, string> = {
+  I: 'Прямая',
+  O: 'Квадрат',
+  T: 'Т-образная',
+  S: 'Зигзаг вправо',
+  Z: 'Зигзаг влево',
+  J: 'Угол влево',
+  L: 'Угол вправо',
+};
+
+export function drawPiecePreview(canvas: HTMLCanvasElement, kind: PieceKind | null): void {
+  canvas.setAttribute('aria-label', kind ? SHAPE_NAMES[kind] : 'Пусто');
+  const c = canvas.getContext('2d');
+  if (!c) return;
+  c.clearRect(0, 0, canvas.width, canvas.height);
+  if (!kind) {
+    c.fillStyle = '#8e9e7d';
+    c.fillRect(canvas.width / 2 - 8, canvas.height / 2 - 1, 16, 2);
+    return;
+  }
+  const points = cells({ kind, x: 0, y: 0, rotation: 0 });
+  const minX = Math.min(...points.map(([x]) => x));
+  const minY = Math.min(...points.map(([, y]) => y));
+  const columns = Math.max(...points.map(([x]) => x)) - minX + 1;
+  const rows = Math.max(...points.map(([, y]) => y)) - minY + 1;
+  const size = Math.min(canvas.width / 5, canvas.height / 3);
+  const left = (canvas.width - columns * size) / 2;
+  const top = (canvas.height - rows * size) / 2;
+  for (const [x, y] of points) {
+    const px = left + (x - minX) * size;
+    const py = top + (y - minY) * size;
+    c.fillStyle = COLORS[kind];
+    c.fillRect(px + 1, py + 1, size - 2, size - 2);
+    c.fillStyle = '#ffffff30';
+    c.fillRect(px + 2, py + 2, size - 4, 3);
+  }
+}
+
 export function drawTetris(canvas: HTMLCanvasElement, state: TetrisState): void {
   const c = canvas.getContext('2d');
   if (!c) return;

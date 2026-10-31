@@ -5,12 +5,18 @@ import { ArcadeService } from '../domain/arcade.ts';
 import { GameBotService } from '../domain/bot.ts';
 import { GroupService } from '../domain/groups.ts';
 import { MaintenanceService } from '../domain/maintenance.ts';
+import { MinesweeperService } from '../domain/minesweeper.ts';
 import { verifiedPlayer } from './context.ts';
 import { MINI_APP_URL } from './mini-app-config.ts';
+import { SqlMineRepository } from './sql-minesweeper.ts';
 import { SqlArcadeRepository } from './sql-repository.ts';
 import { SqlSocialRepository } from './sql-social-repository.ts';
 import { telegramGateway } from './telegram-gateway.ts';
 export const repository = new SqlArcadeRepository(db);
+export const minesweeper = new MinesweeperService(new SqlMineRepository(db), {
+  now: () => Date.now(),
+  seed: () => Math.floor(Math.random() * 0x100000000),
+});
 export const socialRepository = new SqlSocialRepository(db, repository);
 export const groups = new GroupService(socialRepository, telegramGateway, () => Date.now());
 export const maintenance = new MaintenanceService(

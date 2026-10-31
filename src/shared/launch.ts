@@ -1,9 +1,13 @@
+import { MODES, type TetrisMode } from '../games/tetris/types.ts';
 import { CATALOG, type GameInfo } from './contracts.ts';
 export type LaunchTarget =
   | { view: 'catalog' }
-  | { view: 'game'; game: GameInfo['id'] }
+  | { view: 'game'; game: GameInfo['id']; mode?: TetrisMode }
   | { view: 'leaderboard'; groupId?: number };
 export function parseLaunch(value: unknown): LaunchTarget {
+  const mode = MODES.find((mode) => value === `game_tetris_${mode}`);
+  if (mode && CATALOG.some((game) => game.id === 'tetris' && game.available))
+    return { view: 'game', game: 'tetris', mode };
   const game = CATALOG.find((game) => game.available && value === `game_${game.id}`);
   if (game) return { view: 'game', game: game.id };
   if (value === 'leaderboard') return { view: 'leaderboard' };

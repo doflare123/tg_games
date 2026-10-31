@@ -73,6 +73,9 @@ export function decodeRun(value: unknown): RunView {
 export function decodeEntry(value: unknown): LeaderboardEntry {
   const r = object(value);
   return {
+    source: r.source === undefined ? 'verified' : oneOf(r.source, ['verified', 'manual']),
+    approximate: r.approximate === undefined ? false : bool(r.approximate),
+    durationKnown: r.durationKnown === undefined ? true : bool(r.durationKnown),
     rank: integer(r.rank, 1, Number.MAX_SAFE_INTEGER),
     playerId: integer(r.playerId, 1, Number.MAX_SAFE_INTEGER),
     name: text(r.name, 1, 100),
@@ -89,6 +92,9 @@ export function decodeLeaderboard(value: unknown): LeaderboardView {
   return {
     mode: oneOf(r.mode, MODES),
     period: oneOf(r.period, ['all', 'week']),
+    ...(r.membershipSync === undefined
+      ? {}
+      : { membershipSync: oneOf(r.membershipSync, ['complete', 'pending', 'failed']) }),
     entries: r.entries.map(decodeEntry),
     me: r.me === null ? null : decodeEntry(r.me),
   };

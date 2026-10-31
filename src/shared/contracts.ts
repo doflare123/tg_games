@@ -1,5 +1,6 @@
 import type { MineSize } from '../games/minesweeper/engine.ts';
 import type { ReplayEvent, TetrisMode, TetrisState } from '../games/tetris/types.ts';
+import type { Board2048, Moves2048, Run2048 } from './2048.ts';
 import type { GroupView } from './groups.ts';
 import type { MineLeaderboard, MineResult, MineResultInput } from './minesweeper.ts';
 export interface Player {
@@ -7,7 +8,7 @@ export interface Player {
   name: string;
 }
 export interface GameInfo {
-  id: 'tetris' | 'minesweeper' | 'mario' | 'doom';
+  id: 'tetris' | 'minesweeper' | '2048' | 'mario' | 'doom';
   title: string;
   subtitle: string;
   available: boolean;
@@ -25,6 +26,13 @@ export const CATALOG: readonly GameInfo[] = [
     id: 'minesweeper',
     title: 'Сапёр',
     subtitle: '9×9 · 16×16 · 30×16 — на время',
+    available: true,
+    ranked: true,
+  },
+  {
+    id: '2048',
+    title: '2048',
+    subtitle: 'Объединяй плитки · набирай очки',
     available: true,
     ranked: true,
   },
@@ -67,6 +75,10 @@ export interface LeaderboardView {
   me: LeaderboardEntry | null;
 }
 export interface Endpoints {
+  create2048Run: { input: { requestId: string }; output: Run2048 };
+  get2048Run: { input: { runId: string }; output: Run2048 };
+  submit2048Moves: { input: Moves2048; output: Run2048 };
+  get2048Leaderboard: { input: { period: Period }; output: Board2048 };
   submitMineResult: {
     input: MineResultInput;
     output: MineResult;

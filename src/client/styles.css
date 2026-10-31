@@ -815,3 +815,27 @@ h1 span {
   background: #161e13;
   color: #f4c775;
 }
+.puzzle-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 5px;
+  width: 190px;
+  margin: 10px auto;
+  transform: rotate(-8deg);
+}
+.puzzle-preview-grid span {
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  background: #b3ce91;
+  color: #22291d;
+  border-radius: 3px;
+  font-weight: 800;
+  font-size: 17px;
+}
+.puzzle-preview-grid span:empty {
+  background: #30352c;
+}
+.puzzle-preview-grid .bright {
+  background: #f4c775;
+}

@@ -100,6 +100,11 @@ function preview(game: GameInfo): HTMLElement {
       blocks.append(block);
     });
     visual.append(blocks, element('span', 'preview-watermark', '40 LINES'));
+  } else if (game.id === '2048') {
+    const blocks = element('div', 'puzzle-preview-grid');
+    for (const value of [2, 4, 0, 0, 4, 8, 16, 0, 8, 32, 64, 2, 16, 64, 128, 2048])
+      blocks.append(element('span', value >= 128 ? 'bright' : '', value ? String(value) : ''));
+    visual.append(blocks, element('span', 'preview-watermark', 'MERGE / REPEAT'));
   } else if (game.id === 'minesweeper') {
     const blocks = element('div', 'mine-preview-grid');
     for (const value of [
@@ -167,7 +172,7 @@ function renderCatalog(): void {
     element(
       'p',
       'hero-description',
-      'Тетрис и Сапёр.\nСобирай линии, обходи мины и побей свой рекорд.',
+      'Тетрис, Сапёр и 2048.\nСобирай линии, объединяй плитки и побей свой рекорд.',
     ),
   );
   const actions = element('div', 'hero-actions');
@@ -357,14 +362,17 @@ async function mountGamePage(
             import('./games/tetris/controller.ts').then((module) =>
               module.mountTetris(host, initialMode),
             )
-        : game.id === 'minesweeper'
+        : game.id === '2048'
           ? (host: { container: HTMLElement; onClose(): void }) =>
-              import('./games/minesweeper/controller.ts').then((module) =>
-                module.mountMinesweeper(host, initialSize),
-              )
-          : game.id === 'mario'
-            ? (await import('./games/mario/adapter.ts')).mountMario
-            : (await import('./games/doom/adapter.ts')).mountDoom;
+              import('./games/2048/controller.ts').then((module) => module.mount2048(host))
+          : game.id === 'minesweeper'
+            ? (host: { container: HTMLElement; onClose(): void }) =>
+                import('./games/minesweeper/controller.ts').then((module) =>
+                  module.mountMinesweeper(host, initialSize),
+                )
+            : game.id === 'mario'
+              ? (await import('./games/mario/adapter.ts')).mountMario
+              : (await import('./games/doom/adapter.ts')).mountDoom;
     if (closed) return;
     body.replaceChildren();
     adapter = await mount(host);

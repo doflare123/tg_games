@@ -2,14 +2,21 @@ import { mkdirSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { Service2048 } from '../src/server/domain/2048.ts';
 import { ArcadeService } from '../src/server/domain/arcade.ts';
 import { GroupService } from '../src/server/domain/groups.ts';
 import { MaintenanceService } from '../src/server/domain/maintenance.ts';
 import { MinesweeperService } from '../src/server/domain/minesweeper.ts';
 import type { TelegramGateway } from '../src/server/domain/telegram.ts';
+import {
+  DDL_2048,
+  SOCIAL_2048_COLUMNS,
+  SOCIAL_2048_INDEXES,
+} from '../src/server/platform/2048-ddl.ts';
 import { MANUAL_RESULTS_DDL } from '../src/server/platform/manual-results-ddl.ts';
 import { MINESWEEPER_DDL } from '../src/server/platform/minesweeper-ddl.ts';
 import { RUN_SOCIAL_COLUMNS, SOCIAL_DDL } from '../src/server/platform/social-ddl.ts';
+import { Sql2048Repository } from '../src/server/platform/sql-2048.ts';
 import { SqlMineRepository } from '../src/server/platform/sql-minesweeper.ts';
 import { SqlArcadeRepository, type SqlDatabase } from '../src/server/platform/sql-repository.ts';
 import { SqlSocialRepository } from '../src/server/platform/sql-social-repository.ts';
@@ -38,6 +45,12 @@ export function localRepository(file = ':memory:') {
   database.exec(SOCIAL_DDL);
   database.exec(MANUAL_RESULTS_DDL);
   database.exec(MINESWEEPER_DDL);
+  database.exec(DDL_2048);
+  const puzzleColumns = database.prepare('PRAGMA table_info(puzzle2048_runs)').all();
+  for (const [name, definition] of Object.entries(SOCIAL_2048_COLUMNS))
+    if (!puzzleColumns.some((column) => column.name === name))
+      database.exec(`ALTER TABLE puzzle2048_runs ADD COLUMN ${name} ${definition}`);
+  database.exec(SOCIAL_2048_INDEXES);
   // Match tgcloud's read/write split instead of letting SQLite accept writes in get/all.
   const read = <T>(query: () => T): T => {
     database.exec('PRAGMA query_only=ON');
@@ -85,6 +98,7 @@ export function createLocalApi(file: string) {
   };
   const social = new SqlSocialRepository(local.db, local.repository);
   const mineRepository = new SqlMineRepository(local.db);
+  const puzzle2048Repository = new Sql2048Repository(local.db);
   const groups = new GroupService(social, telegram, () => Date.now());
   const maintenance = new MaintenanceService(
     social,
@@ -93,6 +107,7 @@ export function createLocalApi(file: string) {
     telegram,
     () => Date.now(),
     mineRepository,
+    puzzle2048Repository,
   );
   const ready = (async () => {
     await social.upsertGroup({
@@ -109,6 +124,10 @@ export function createLocalApi(file: string) {
     groups,
   );
   const player = { id: 1, name: 'Локальный игрок' };
+  const puzzle2048 = new Service2048(puzzle2048Repository, {
+    now: () => Date.now(),
+    seed: () => Math.floor(Math.random() * 0x100000000),
+  });
   const minesweeper = new MinesweeperService(mineRepository, {
     now: () => Date.now(),
   });
@@ -137,6 +156,30 @@ export function createLocalApi(file: string) {
         const method = req.url?.split('?')[0]?.split('/').pop();
         let result: unknown;
         switch (method) {
+          case 'create2048Run':
+            result = await puzzle2048.create(player, input);
+            break;
+          case 'get2048Run':
+            result = await puzzle2048.get(player, input);
+            break;
+          case 'submit2048Moves':
+            {
+              const outcome = await puzzle2048.submit(player, input);
+              result = outcome;
+              if (outcome.status === 'verified') {
+                try {
+                  const run = await puzzle2048Repository.get(outcome.id);
+                  if (run) await maintenance.result2048(run);
+                  await maintenance.sweep(3);
+                } catch {
+                  // Notification delivery is retried independently from saving the result.
+                }
+              }
+            }
+            break;
+          case 'get2048Leaderboard':
+            result = await puzzle2048.leaderboard(player, input);
+            break;
           case 'submitMineResult':
             {
               const outcome = await minesweeper.submit(player, input);

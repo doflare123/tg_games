@@ -4,6 +4,8 @@ import type { Player } from '../../shared/contracts.ts';
 import { AppError, object, oneOf } from '../../shared/errors.ts';
 import type { GroupRecord } from '../../shared/groups.ts';
 import { launchUrl } from '../../shared/launch.ts';
+import type { Repository2048, Stored2048 } from './2048.ts';
+import { record2048Notification } from './2048-record-notification.ts';
 import type { GroupService } from './groups.ts';
 import { mineRecordNotification } from './mine-record-notification.ts';
 import type { MineNotificationResult, MineRepository } from './minesweeper.ts';
@@ -19,6 +21,7 @@ export class MaintenanceService {
     private readonly telegram: TelegramGateway,
     private readonly now: () => number,
     private readonly mines?: MineRepository,
+    private readonly puzzle2048?: Repository2048,
   ) {}
   private async targetGroups(
     player: Player,
@@ -140,6 +143,53 @@ export class MaintenanceService {
     }
     await this.mines.processed(run.id);
   }
+  async result2048(run: Stored2048): Promise<void> {
+    if (!this.puzzle2048 || run.status !== 'verified' || run.socialProcessed) return;
+    const player = { id: run.playerId, name: run.playerName };
+    for (const group of await this.targetGroups(player, run.verifiedAt)) {
+      try {
+        await this.groups.access(player, group.id);
+      } catch (error) {
+        if (
+          error instanceof AppError &&
+          (error.code === 'UNAUTHORIZED' || error.code === 'NOT_FOUND')
+        )
+          continue;
+        throw error;
+      }
+      const sync = await this.groups.synchronize(group.id);
+      if (sync.state !== 'complete')
+        throw new AppError('UNAVAILABLE', 'Обновляется состав группы; объявление отложено');
+      const scope = { groupId: group.id, membershipCheckedSince: sync.checkedSince };
+      const before = await this.puzzle2048.leaderboard(player, 'all', 0, {
+        ...scope,
+        maxResultOrder: run.verifiedOrder - 1,
+      });
+      const after = await this.puzzle2048.leaderboard(player, 'all', 0, {
+        ...scope,
+        maxResultOrder: run.verifiedOrder,
+      });
+      const message = record2048Notification(run, before, after);
+      if (message)
+        await this.repository.enqueue({
+          id: `record:${run.id}:${group.id}`,
+          payload: {
+            type: 'record',
+            game: '2048',
+            chatId: group.id,
+            playerId: run.playerId,
+            mode: 'classic',
+            runId: run.id,
+            rank: after.me?.rank ?? 1,
+            text: message,
+          },
+          dueAt: this.now(),
+          expiresAt: run.verifiedAt + 300000,
+          attempts: 0,
+        });
+    }
+    await this.puzzle2048.processed(run.id);
+  }
   async sweep(limit = 12): Promise<{ processed: number; deferred: number }> {
     let deferred = 0;
     for (const run of await this.repository.pendingResults(3)) {
@@ -160,6 +210,17 @@ export class MaintenanceService {
         deferred++;
         console.warn(
           'mine_record_generation_deferred',
+          error instanceof Error ? error.message : 'unknown',
+        );
+      }
+    }
+    for (const run of (await this.puzzle2048?.pendingResults(3)) ?? []) {
+      try {
+        await this.result2048(run);
+      } catch (error) {
+        deferred++;
+        console.warn(
+          'puzzle2048_record_generation_deferred',
           error instanceof Error ? error.message : 'unknown',
         );
       }
@@ -194,16 +255,20 @@ export class MaintenanceService {
       const scope = { groupId: payload.chatId, membershipCheckedSince: sync.checkedSince };
       if (payload.game === 'minesweeper' && !this.mines)
         throw new AppError('UNAVAILABLE', 'Рейтинг Сапёра недоступен');
+      if (payload.game === '2048' && !this.puzzle2048)
+        throw new AppError('UNAVAILABLE', 'Рейтинг 2048 недоступен');
       const board =
-        payload.game === 'minesweeper' && this.mines
-          ? await this.mines.leaderboard(player, oneOf(payload.mode, SIZES), 'all', 0, scope)
-          : await this.arcade.leaderboard(
-              { id: payload.playerId, name: 'Игрок' },
-              oneOf(payload.mode, MODES),
-              'all',
-              0,
-              scope,
-            );
+        payload.game === '2048' && this.puzzle2048
+          ? await this.puzzle2048.leaderboard(player, 'all', 0, scope)
+          : payload.game === 'minesweeper' && this.mines
+            ? await this.mines.leaderboard(player, oneOf(payload.mode, SIZES), 'all', 0, scope)
+            : await this.arcade.leaderboard(
+                { id: payload.playerId, name: 'Игрок' },
+                oneOf(payload.mode, MODES),
+                'all',
+                0,
+                scope,
+              );
       if (
         !board.me ||
         board.me.rank !== payload.rank ||
@@ -224,9 +289,11 @@ export class MaintenanceService {
                 text: '🎮 Побить рекорд',
                 url: launchUrl(
                   me.username,
-                  payload.game === 'minesweeper'
-                    ? `game_minesweeper_${payload.mode}`
-                    : `game_tetris_${payload.mode}`,
+                  payload.game === '2048'
+                    ? 'game_2048'
+                    : payload.game === 'minesweeper'
+                      ? `game_minesweeper_${payload.mode}`
+                      : `game_tetris_${payload.mode}`,
                   me.hasMainMiniApp ? 'startapp' : 'start',
                 ),
               },

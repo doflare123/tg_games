@@ -1,6 +1,7 @@
 import { db, EndpointError } from 'sdk';
 import type { Player } from '../../shared/contracts.ts';
 import { AppError } from '../../shared/errors.ts';
+import { Service2048 } from '../domain/2048.ts';
 import { ArcadeService } from '../domain/arcade.ts';
 import { GameBotService } from '../domain/bot.ts';
 import { GroupService } from '../domain/groups.ts';
@@ -8,11 +9,17 @@ import { MaintenanceService } from '../domain/maintenance.ts';
 import { MinesweeperService } from '../domain/minesweeper.ts';
 import { verifiedPlayer } from './context.ts';
 import { MINI_APP_URL } from './mini-app-config.ts';
+import { Sql2048Repository } from './sql-2048.ts';
 import { SqlMineRepository } from './sql-minesweeper.ts';
 import { SqlArcadeRepository } from './sql-repository.ts';
 import { SqlSocialRepository } from './sql-social-repository.ts';
 import { telegramGateway } from './telegram-gateway.ts';
 export const repository = new SqlArcadeRepository(db);
+export const puzzle2048Repository = new Sql2048Repository(db);
+export const puzzle2048 = new Service2048(puzzle2048Repository, {
+  now: () => Date.now(),
+  seed: () => Math.floor(Math.random() * 0x100000000),
+});
 export const mineRepository = new SqlMineRepository(db);
 export const minesweeper = new MinesweeperService(mineRepository, {
   now: () => Date.now(),
@@ -26,6 +33,7 @@ export const maintenance = new MaintenanceService(
   telegramGateway,
   () => Date.now(),
   mineRepository,
+  puzzle2048Repository,
 );
 export const gameBot = new GameBotService(
   socialRepository,

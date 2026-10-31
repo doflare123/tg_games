@@ -25,7 +25,7 @@ function decodeJob(value: unknown): SocialJob {
   const chatId = groupId(p.chatId);
   const payload: JobPayload = {
     type: 'record',
-    game: p.game === undefined ? 'tetris' : oneOf(p.game, ['tetris', 'minesweeper']),
+    game: p.game === undefined ? 'tetris' : oneOf(p.game, ['tetris', 'minesweeper', '2048']),
     chatId,
     playerId: integer(p.playerId, 1, Number.MAX_SAFE_INTEGER),
     mode: text(p.mode, 1, 32),
@@ -94,6 +94,7 @@ export class SqlSocialRepository implements SocialRepository {
       `WITH players AS (
       SELECT player_id FROM runs WHERE status='verified' UNION SELECT player_id FROM manual_results
       UNION SELECT player_id FROM minesweeper_runs WHERE status='won'
+      UNION SELECT player_id FROM puzzle2048_runs WHERE status='verified'
     ) SELECT p.player_id FROM players p LEFT JOIN group_memberships m ON m.user_id=p.player_id AND m.group_id=:group
       WHERE m.updated_at IS NULL OR m.updated_at<:since
       ORDER BY CASE WHEN m.updated_at IS NULL THEN 0 ELSE 1 END,m.updated_at,p.player_id LIMIT :limit`,

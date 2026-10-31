@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { localRepository } from '../scripts/local-api.ts';
+import { DIRECTIONS, type Direction, move2048 } from '../src/games/2048/engine.ts';
 import { type MineSize, SIZES } from '../src/games/minesweeper/engine.ts';
 import { createTetris } from '../src/games/tetris/engine.ts';
 import type { TetrisMode } from '../src/games/tetris/types.ts';
+import { Service2048 } from '../src/server/domain/2048.ts';
 import { ArcadeService } from '../src/server/domain/arcade.ts';
 import { type GAME_COMMANDS, GameBotService } from '../src/server/domain/bot.ts';
 import { GroupService } from '../src/server/domain/groups.ts';
@@ -11,6 +13,7 @@ import { decodeManualResult } from '../src/server/domain/manual-result.ts';
 import { MinesweeperService } from '../src/server/domain/minesweeper.ts';
 import type { StoredRun } from '../src/server/domain/repository.ts';
 import type { SendMessage, TelegramGateway } from '../src/server/domain/telegram.ts';
+import { Sql2048Repository } from '../src/server/platform/sql-2048.ts';
 import { SqlManualResultRepository } from '../src/server/platform/sql-manual-results.ts';
 import { SqlMineRepository } from '../src/server/platform/sql-minesweeper.ts';
 import { SqlSocialRepository } from '../src/server/platform/sql-social-repository.ts';
@@ -58,6 +61,8 @@ async function setup() {
   const arcade = new ArcadeService(local.repository, { now: () => now, seed: () => 1 }, groups);
   const mineRepository = new SqlMineRepository(local.db);
   const minesweeper = new MinesweeperService(mineRepository, { now: () => now });
+  const puzzleRepository = new Sql2048Repository(local.db);
+  const puzzle = new Service2048(puzzleRepository, { now: () => now, seed: () => 123 });
   const maintenance = new MaintenanceService(
     repository,
     local.repository,
@@ -65,6 +70,7 @@ async function setup() {
     telegram,
     () => now,
     mineRepository,
+    puzzleRepository,
   );
   const bot = new GameBotService(repository, groups, telegram, () => now, 'https://arcade.test/');
   async function verified(
@@ -113,6 +119,8 @@ async function setup() {
     arcade,
     mineRepository,
     minesweeper,
+    puzzleRepository,
+    puzzle,
     maintenance,
     bot,
     telegram,
@@ -318,6 +326,237 @@ async function mineResult(
   if (!run) throw new Error('Missing mine result');
   return run;
 }
+
+async function puzzleResult(
+  s: Awaited<ReturnType<typeof setup>>,
+  id: string,
+  playerId: number,
+  score: number,
+) {
+  const created = await s.puzzle.create(
+    { id: playerId, name: `P${playerId}` },
+    { requestId: `puzzle_${id.padEnd(16, '_')}` },
+  );
+  const run = await s.puzzleRepository.get(created.id);
+  if (!run) throw new Error('Missing puzzle fixture');
+  await s.puzzleRepository.save(
+    {
+      ...run,
+      status: 'verified',
+      revision: 1,
+      state: { ...run.state, score },
+      verifiedAt: s.now(),
+    },
+    0,
+  );
+  const stored = await s.puzzleRepository.get(created.id);
+  if (!stored) throw new Error('Missing puzzle result');
+  return stored;
+}
+
+describe('2048 record announcements', () => {
+  it('keeps legacy results silent while opting an existing active game into new announcements on completion', async () => {
+    const s = await setup();
+    const created = await s.puzzle.create(s.player, { requestId: 'puzzle_legacy_1234567' });
+    // Omitting the added columns uses exactly the defaults applied to pre-migration rows.
+    await s.local.db.run(
+      `INSERT INTO puzzle2048_runs
+      (id,player_id,player_name,ruleset,revision,state_json,status,score,max_tile,created_at,expires_at,last_submission)
+      SELECT 'legacy-result',2,'P2',ruleset,revision,state_json,'verified',0,max_tile,created_at,expires_at,last_submission
+      FROM puzzle2048_runs WHERE id=:id`,
+      { ':id': created.id },
+    );
+    expect((await s.puzzleRepository.get('legacy-result'))?.socialProcessed).toBe(true);
+    expect(await s.puzzleRepository.pendingResults(3)).toEqual([]);
+    await s.local.db.run('UPDATE puzzle2048_runs SET social_processed=1 WHERE id=:id', {
+      ':id': created.id,
+    });
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    s.advance(1);
+    await s.puzzle.submit(s.player, { runId: created.id, revision: 0, moves: [], finish: true });
+    expect((await s.puzzleRepository.get(created.id))?.socialProcessed).toBe(false);
+    expect((await s.puzzleRepository.pendingResults(3)).map((r) => r.id)).toEqual([created.id]);
+  });
+  it('defers an incomplete membership check and does not announce results outside the group top ten', async () => {
+    const s = await setup();
+    for (let id = 2; id <= 12; id++) {
+      s.members.set(id, { active: true, admin: false });
+      await puzzleResult(s, `rival-${id}`, id, id * 100);
+    }
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.result2048(await puzzleResult(s, 'outside-top', 1, 50));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    const winner = await puzzleResult(s, 'winner-after-outage', 1, 5000);
+    s.advance(16 * 60_000);
+    const member = s.telegram.member;
+    s.telegram.member = async (chat, id) => {
+      if (id === 2) throw new Error('Telegram outage');
+      return member(chat, id);
+    };
+    await expect(s.maintenance.result2048(winner)).rejects.toMatchObject({ code: 'UNAVAILABLE' });
+    expect((await s.puzzleRepository.get(winner.id))?.socialProcessed).toBe(false);
+    expect(s.sent).toHaveLength(0);
+    s.telegram.member = member;
+    await s.maintenance.result2048(winner);
+    await s.maintenance.sweep();
+    // The five-minute delivery window has passed during the outage.
+    expect(s.sent).toHaveLength(0);
+    expect((await s.puzzleRepository.get(winner.id))?.socialProcessed).toBe(true);
+  });
+  it('recovers a verified result from the replay service and announces it once with a 2048 link', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const initial = await s.puzzle.create(s.player, { requestId: 'puzzle_live_123456789' });
+    const simulated = structuredClone(initial.state);
+    const moves: Direction[] = [];
+    for (let i = 0; i < 20; i++) {
+      const direction = DIRECTIONS.find((d) => move2048(structuredClone(simulated), d));
+      if (!direction) throw new Error('Missing move');
+      moves.push(direction);
+      move2048(simulated, direction);
+    }
+    s.advance(10);
+    const input = { runId: initial.id, revision: 0, moves, finish: true };
+    await s.puzzle.submit(s.player, input);
+    const stored = await s.puzzleRepository.get(initial.id);
+    expect(stored).toMatchObject({ verifiedAt: s.now(), verifiedOrder: 1, socialProcessed: false });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain(`2048 · ${simulated.score} очков`);
+    expect(s.sent[0]?.text).toContain('Первый рекорд группы');
+    expect(s.sent[0]?.reply_markup?.inline_keyboard[0]?.[0]).toEqual({
+      text: '🎮 Побить рекорд',
+      url: 'https://t.me/arcade_bot?startapp=game_2048',
+    });
+    await s.puzzle.submit(s.player, input);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect((await s.puzzleRepository.get(initial.id))?.socialProcessed).toBe(true);
+    expect(await s.puzzleRepository.pendingResults(3)).toEqual([]);
+  });
+  it('compares group scores, excludes outsiders, and announces leader improvements', async () => {
+    const s = await setup();
+    await puzzleResult(s, 'rival', 2, 1000);
+    await puzzleResult(s, 'outsider', 3, 9000);
+    s.members.set(3, { active: false, admin: false });
+    await s.repository.observeMember({
+      chatId: -100,
+      userId: 3,
+      active: false,
+      updatedAt: s.now(),
+    });
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    s.advance(1);
+    await s.maintenance.result2048(await puzzleResult(s, 'winner', 1, 1500));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('P2');
+    expect(s.sent[0]?.text).toContain('больше на 500 очков');
+    expect((await s.puzzle.leaderboard(s.player, { period: 'all' })).me?.rank).toBe(2);
+    s.advance(300001);
+    await s.maintenance.result2048(await puzzleResult(s, 'improved', 1, 1700));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(2);
+    expect(s.sent[1]?.text).toContain('Улучшен рекорд группы: больше на 200 очков');
+  });
+  it('ignores same-place personal improvements, tied leader scores and old results', async () => {
+    const s = await setup();
+    await puzzleResult(s, 'leader', 2, 10000);
+    await puzzleResult(s, 'second', 1, 500);
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    await s.maintenance.result2048(await puzzleResult(s, 'personal', 1, 900));
+    await s.maintenance.result2048(await puzzleResult(s, 'tie', 2, 10000));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+  });
+  it('orders snapshots by completion, suppresses superseded records and shares the group cooldown', async () => {
+    const s = await setup();
+    const early = await s.puzzle.create(s.player, { requestId: 'puzzle_early_1234567' });
+    await puzzleResult(s, 'rival', 2, 100);
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const original = await s.puzzleRepository.get(early.id);
+    if (!original) throw new Error('Missing fixture');
+    await s.puzzleRepository.save(
+      {
+        ...original,
+        status: 'verified',
+        revision: 1,
+        state: { ...original.state, score: 200 },
+        verifiedAt: s.now(),
+      },
+      0,
+    );
+    const a = await s.puzzleRepository.get(early.id);
+    if (!a) throw new Error('Missing result');
+    expect(a.verifiedOrder).toBe(2);
+    const before = await s.puzzleRepository.leaderboard(s.player, 'all', 0, {
+      groupId: -100,
+      maxResultOrder: a.verifiedOrder - 1,
+    });
+    expect(before.me).toBeNull();
+    expect(before.entries[0]?.playerId).toBe(2);
+    const b = await puzzleResult(s, 'new-winner', 3, 300);
+    await s.maintenance.result2048(a);
+    await s.maintenance.result2048(b);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('P3');
+    await s.maintenance.mineResult(await mineResult(s, 'mine-cooldown', 1, 30000));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    s.advance(300001);
+    await s.maintenance.result2048(await puzzleResult(s, 'later', 1, 400));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(2);
+  });
+  it('retries a Telegram failure, and rechecks membership before delivery', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.result2048(await puzzleResult(s, 'retry', 1, 100));
+    const send = s.telegram.send;
+    s.telegram.send = vi
+      .fn()
+      .mockRejectedValueOnce({ code: 429, parameters: { retry_after: 2 } })
+      .mockImplementation(send);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    s.advance(2100);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    s.advance(300001);
+    await s.maintenance.result2048(await puzzleResult(s, 'left', 1, 200));
+    s.members.set(1, { active: false, admin: false });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+  });
+  it('discovers old players in new groups without announcing their historical records', async () => {
+    const s = await setup();
+    await puzzleResult(s, 'old', 2, 500);
+    await s.repository.upsertGroup({
+      id: -200,
+      title: 'Новая группа',
+      active: true,
+      botAdmin: true,
+    });
+    expect(await s.repository.membersToRefresh(-200, s.now() - 1000, 25)).toContain(2);
+    await s.groups.synchronize(-200);
+    expect(
+      (await s.puzzleRepository.leaderboard(s.player, 'all', 0, { groupId: -200 })).entries[0]
+        ?.playerId,
+    ).toBe(2);
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -200, enabled: true });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+  });
+});
 
 describe('Minesweeper record announcements', () => {
   it.each(SIZES)('announces %s once and opens the matching difficulty', async (size) => {
@@ -662,6 +901,16 @@ describe('native private game commands', () => {
     });
     await s.bot.configure();
     expect(s.commands[0]?.commands.some((c) => c.command === 'game_minesweeper')).toBe(true);
+  });
+  it('opens 2048 directly and registers its game command', async () => {
+    const s = await setup();
+    await s.bot.message({ ...payload, text: '/game_2048@arcade_bot' });
+    expect(s.sent[0]?.reply_markup?.inline_keyboard[0]?.[0]).toEqual({
+      text: 'Играть',
+      url: 'https://t.me/arcade_bot?startapp=game_2048',
+    });
+    await s.bot.configure();
+    expect(s.commands[0]?.commands.some((c) => c.command === 'game_2048')).toBe(true);
   });
   it('responds only to the caller with a direct game link without scheduling timed deletion', async () => {
     const s = await setup();

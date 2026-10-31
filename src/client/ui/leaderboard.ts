@@ -1,6 +1,7 @@
 import type { TetrisMode } from '../../games/tetris/types.ts';
 import type { GroupView } from '../../shared/groups.ts';
 import { api, hasApi } from '../platform/api.ts';
+import { mount2048Leaderboard } from './2048-leaderboard.ts';
 import { button, element, errorMessage, formatTime } from './dom.ts';
 import { mountMineLeaderboard } from './mine-leaderboard.ts';
 
@@ -12,6 +13,7 @@ export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): ()
   for (const [value, label] of [
     ['tetris', 'Тетрис'],
     ['minesweeper', 'Сапёр'],
+    ['2048', '2048'],
   ]) {
     const option = element('option', '', label);
     option.value = value ?? 'tetris';
@@ -25,9 +27,11 @@ export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): ()
   picker.addEventListener('change', () => {
     dispose();
     dispose =
-      picker.value === 'minesweeper'
-        ? mountMineLeaderboard(content)
-        : mountTetrisLeaderboard(content, initialGroupId);
+      picker.value === '2048'
+        ? mount2048Leaderboard(content)
+        : picker.value === 'minesweeper'
+          ? mountMineLeaderboard(content)
+          : mountTetrisLeaderboard(content, initialGroupId);
   });
   return () => dispose();
 }

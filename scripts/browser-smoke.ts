@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { access, mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { DIRECTIONS, move2048, type State2048 } from '../src/games/2048/engine.ts';
 import { createMines } from '../src/games/minesweeper/engine.ts';
 import { createTetris } from '../src/games/tetris/engine.ts';
 import type { TetrisState } from '../src/games/tetris/types.ts';
@@ -76,13 +77,96 @@ try {
       throw error;
     });
   await page.getByRole('heading', { name: 'ВЫБИРАЙ СВОЮ ИГРУ' }).waitFor();
-  assert.deepEqual(await page.locator('.card-info h3').allTextContents(), ['Тетрис', 'Сапёр']);
+  assert.deepEqual(await page.locator('.card-info h3').allTextContents(), [
+    'Тетрис',
+    'Сапёр',
+    '2048',
+  ]);
   assert.doesNotMatch((await page.locator('body').textContent()) ?? '', /doom|mario|дум|марио/i);
   assert.doesNotMatch(
     (await page.locator('meta[name=description]').getAttribute('content')) ?? '',
     /doom|mario|дум|марио/i,
   );
   await page.screenshot({ path: '.cache/screenshots/desktop.png', fullPage: true });
+  await page.getByRole('button', { name: 'Играть: 2048', exact: true }).click();
+  await page.locator('.puzzle-grid').waitFor();
+  assert.equal(new URL(page.url()).hash, '#game_2048');
+  assert.equal(await page.locator('.puzzle-tile').count(), 16);
+  // Keyboard input, local restoration, viewport fit and a pointer swipe.
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('ArrowDown');
+  const saved2048 = await page.evaluate(() => localStorage.getItem('arcade:2048:v1'));
+  assert.ok(saved2048);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.locator('.puzzle-grid').waitFor();
+  assert.equal(await page.evaluate(() => localStorage.getItem('arcade:2048:v1')), saved2048);
+  for (const width of [320, 430, 1440]) {
+    await page.setViewportSize({ width, height: 932 });
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+      `2048 must fit width ${width}`,
+    );
+  }
+  const snapshot2048 = JSON.parse(saved2048) as { state: State2048 };
+  const swipeState = snapshot2048.state;
+  const swipeDirection = DIRECTIONS.find((d) => move2048(structuredClone(swipeState), d));
+  assert.ok(swipeDirection);
+  const bounds2048 = await page.locator('.puzzle-grid').boundingBox();
+  assert.ok(bounds2048);
+  const center2048 = {
+    x: bounds2048.x + bounds2048.width / 2,
+    y: bounds2048.y + bounds2048.height / 2,
+  };
+  await page.mouse.move(center2048.x, center2048.y);
+  await page.mouse.down();
+  await page.mouse.move(
+    center2048.x + (swipeDirection === 'right' ? 80 : swipeDirection === 'left' ? -80 : 0),
+    center2048.y + (swipeDirection === 'down' ? 80 : swipeDirection === 'up' ? -80 : 0),
+  );
+  await page.mouse.up();
+  assert.ok(
+    (await page.locator('.puzzle-stats').textContent())?.includes(`ходов ${swipeState.moves + 1}`),
+  );
+  if (!production) {
+    await page.getByRole('button', { name: 'Рейтинговая партия', exact: true }).click();
+    await page.waitForFunction(() =>
+      document.querySelector('.puzzle-status')?.textContent?.includes('Соединяй плитки'),
+    );
+    for (let i = 0; i < 8; i++)
+      for (const key of ['ArrowLeft', 'ArrowDown', 'ArrowRight', 'ArrowUp'])
+        await page.keyboard.press(key);
+    let fail2048 = true;
+    await page.route('**/__dev/rpc/submit2048Moves', async (route) => {
+      if (fail2048) {
+        fail2048 = false;
+        await route.abort('failed');
+      } else await route.continue();
+    });
+    await page.getByRole('button', { name: 'Завершить и записать очки', exact: true }).click();
+    await page.getByRole('button', { name: 'Повторить отправку', exact: true }).waitFor();
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() =>
+      document.querySelector('.puzzle-mode')?.textContent?.includes('РЕЗУЛЬТАТ ЗАПИСАН'),
+    );
+    await page.screenshot({ path: '.cache/screenshots/2048-desktop.png', fullPage: true });
+    assert.doesNotMatch(
+      (await page.locator('.puzzle2048').textContent()) ?? '',
+      /сервер|проверяем ходы/i,
+    );
+    await page.getByRole('button', { name: '← Назад', exact: true }).click();
+    await page.getByRole('button', { name: 'Рекорды', exact: true }).click();
+    await page.getByLabel('Игра рейтинга').selectOption('2048');
+    await page.locator('.personal-record').waitFor();
+    assert.ok(
+      (await page.locator('.leaderboard tbody').textContent())?.includes('Локальный игрок'),
+    );
+    await page.getByLabel('Период рейтинга 2048').selectOption('week');
+    await page.locator('.personal-record').waitFor();
+  } else {
+    await page.getByRole('button', { name: '← Назад', exact: true }).click();
+  }
+  await page.getByRole('button', { name: 'Игры', exact: true }).click();
   await page.getByRole('button', { name: 'Играть: Сапёр', exact: true }).click();
   await page.locator('.mine-grid').waitFor();
   assert.equal(new URL(page.url()).hash, '#game_minesweeper');
@@ -478,6 +562,37 @@ try {
     assert.ok(box);
     return { id, x: box.x + box.width / 2, y: box.y + box.height / 2 };
   };
+  await phone.goto('http://127.0.0.1:4173/?startapp=game_2048');
+  await phone.locator('.puzzle-grid').waitFor();
+  await phone.getByRole('button', { name: 'Свободная партия', exact: true }).click();
+  const mobile2048 = JSON.parse(
+    await phone.evaluate(() => localStorage.getItem('arcade:2048:v1') ?? '{}'),
+  ) as { state: State2048 };
+  const mobileDirection = DIRECTIONS.find((d) => move2048(structuredClone(mobile2048.state), d));
+  assert.ok(mobileDirection);
+  const contact2048 = await point('.puzzle-grid', 90);
+  await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [contact2048] });
+  await touch.send('Input.dispatchTouchEvent', {
+    type: 'touchMove',
+    touchPoints: [
+      {
+        ...contact2048,
+        x:
+          contact2048.x + (mobileDirection === 'left' ? -70 : mobileDirection === 'right' ? 70 : 0),
+        y: contact2048.y + (mobileDirection === 'up' ? -70 : mobileDirection === 'down' ? 70 : 0),
+      },
+    ],
+  });
+  await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  assert.ok((await phone.locator('.puzzle-stats').textContent())?.includes('ходов 1'));
+  await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [contact2048] });
+  await touch.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
+  assert.ok((await phone.locator('.puzzle-stats').textContent())?.includes('ходов 1'));
+  assert.equal(
+    await phone.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+    false,
+  );
+  await phone.screenshot({ path: '.cache/screenshots/2048-mobile.png', fullPage: true });
   for (const hidden of ['game_doom', 'game_mario']) {
     await phone.goto(`http://127.0.0.1:4173/?startapp=${hidden}`);
     await phone.getByRole('heading', { name: 'ВЫБИРАЙ СВОЮ ИГРУ' }).waitFor();
@@ -922,7 +1037,7 @@ try {
 
   assert.deepEqual(errors, [], 'Browser runtime errors');
   console.log(
-    `Browser checks passed: desktop/mobile, Minesweeper sizes/flags/rankings/retry, ranked Tetris → leaderboard, touch gestures, four-line celebration, mode links, hidden game links${hasMario ? ', NES load/save' : ''}${hasWad ? ', Doom WASM launch' : ''}.`,
+    `Browser checks passed: desktop/mobile, 2048 controls/save/rankings/retry, Minesweeper sizes/flags/rankings/retry, ranked Tetris → leaderboard, touch gestures, four-line celebration, mode links, hidden game links${hasMario ? ', NES load/save' : ''}${hasWad ? ', Doom WASM launch' : ''}.`,
   );
 } finally {
   await browser.close();

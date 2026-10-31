@@ -1,4 +1,34 @@
 import { index, integer, table, text } from 'sdk/db';
+export const puzzle2048Runs = table(
+  'puzzle2048_runs',
+  {
+    id: text('id').primaryKey(),
+    playerId: integer('player_id').notNull(),
+    playerName: text('player_name').notNull(),
+    ruleset: text('ruleset').notNull(),
+    revision: integer('revision').notNull(),
+    stateJson: text('state_json').notNull(),
+    status: text('status').notNull(),
+    score: integer('score').notNull(),
+    maxTile: integer('max_tile').notNull(),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    lastSubmission: text('last_submission'),
+    verifiedAt: integer('verified_at').notNull().default(0),
+    verifiedOrder: integer('verified_order').notNull().default(0),
+    socialProcessed: integer('social_processed').notNull().default(1),
+  },
+  (t) => ({
+    leaderboard: index('puzzle2048_leaderboard').on(t.status, t.ruleset, t.score, t.createdAt),
+    recent: index('puzzle2048_recent').on(t.playerId, t.createdAt),
+    verifiedOrder: index('puzzle2048_verified_order').on(t.verifiedOrder),
+    pendingSocial: index('puzzle2048_pending_social').on(
+      t.status,
+      t.socialProcessed,
+      t.verifiedOrder,
+    ),
+  }),
+);
 export const minesweeperRuns = table(
   'minesweeper_runs',
   {

@@ -1,4 +1,5 @@
 import type { TetrisMode } from '../../games/tetris/types.ts';
+import { decodeBoard2048, decodeRun2048 } from '../../shared/2048.ts';
 import type { EndpointInput, EndpointName, Player, ReplayInput } from '../../shared/contracts.ts';
 import { AppError, integer, object, oneOf, text } from '../../shared/errors.ts';
 import { decodeGroup } from '../../shared/groups.ts';
@@ -9,11 +10,10 @@ export const hasApi = inTelegram || import.meta.env.DEV;
 async function call<K extends EndpointName>(name: K, input: EndpointInput<K>): Promise<unknown> {
   if (inTelegram) {
     const serverless = telegram?.Serverless;
-    if (!serverless) throw new AppError('UNAVAILABLE', 'Обнови Telegram для подключения к серверу');
+    if (!serverless) throw new AppError('UNAVAILABLE', 'Обнови Telegram для рейтинговой игры');
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(
-        () =>
-          reject(new AppError('UNAVAILABLE', 'Сервер не ответил. Запись сохранена до повтора.')),
+        () => reject(new AppError('UNAVAILABLE', 'Нет ответа. Запись сохранена до повтора.')),
         15000,
       );
       serverless.call(name, input, (error, result) => {
@@ -60,6 +60,18 @@ async function call<K extends EndpointName>(name: K, input: EndpointInput<K>): P
   throw new AppError('UNAUTHORIZED', 'Рейтинговая игра доступна внутри Telegram');
 }
 export const api = {
+  async create2048(requestId: string) {
+    return decodeRun2048(await call('create2048Run', { requestId }));
+  },
+  async get2048(runId: string) {
+    return decodeRun2048(await call('get2048Run', { runId }));
+  },
+  async submit2048(input: EndpointInput<'submit2048Moves'>) {
+    return decodeRun2048(await call('submit2048Moves', input));
+  },
+  async leaderboard2048(period: 'all' | 'week') {
+    return decodeBoard2048(await call('get2048Leaderboard', { period }));
+  },
   async submitMine(input: EndpointInput<'submitMineResult'>) {
     return decodeMineResult(await call('submitMineResult', input));
   },

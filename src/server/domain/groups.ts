@@ -1,5 +1,5 @@
 import type { LeaderboardView, Player } from '../../shared/contracts.ts';
-import { AppError, object } from '../../shared/errors.ts';
+import { AppError, integer, object } from '../../shared/errors.ts';
 import { type GroupView, groupId } from '../../shared/groups.ts';
 import type { SocialRepository } from './social-repository.ts';
 import type { TelegramGateway } from './telegram.ts';
@@ -100,8 +100,12 @@ export class GroupService {
     const id = groupId(data.groupId);
     if (typeof data.enabled !== 'boolean')
       throw new AppError('BAD_INPUT', 'Укажи, включать ли уведомления');
+    const threadId =
+      data.notificationThreadId === undefined || data.notificationThreadId === null
+        ? data.notificationThreadId
+        : integer(data.notificationThreadId, 1, Number.MAX_SAFE_INTEGER);
     await this.access(player, id, true);
-    await this.repository.notifications(id, data.enabled, this.now());
+    await this.repository.notifications(id, data.enabled, this.now(), threadId);
     return this.access(player, id);
   }
 }

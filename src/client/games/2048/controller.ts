@@ -13,6 +13,7 @@ import { object, oneOf, text } from '../../../shared/errors.ts';
 import { api, hasApi } from '../../platform/api.ts';
 import { button, element, errorMessage } from '../../ui/dom.ts';
 import type { GameAdapter, GameHost } from '../adapter.ts';
+import { type Move2048Visual, Renderer2048 } from './renderer.ts';
 import './game.css';
 
 const SAVE_KEY = 'arcade:2048:v1';
@@ -59,8 +60,7 @@ export function mount2048(host: GameHost): GameAdapter {
   board.tabIndex = 0;
   board.setAttribute('role', 'group');
   board.setAttribute('aria-label', 'Поле 2048. Управление стрелками или WASD');
-  const cells = Array.from({ length: 16 }, () => element('div', 'puzzle-tile'));
-  board.append(...cells);
+  const renderer = new Renderer2048(board);
   const status = element('p', 'puzzle-status');
   status.setAttribute('role', 'status');
   const actions = element('div', 'puzzle-toolbar');
@@ -139,15 +139,9 @@ export function mount2048(host: GameHost): GameAdapter {
       storageFailed = true;
     }
   }
-  function render(): void {
+  function render(move?: Move2048Visual): void {
     if (disposed) return;
-    cells.forEach((cell, index) => {
-      const value = state.board[index] ?? 0;
-      cell.textContent = value ? (value < 1000000 ? String(value) : `2^${Math.log2(value)}`) : '';
-      cell.dataset.level = String(value ? Math.min(11, Math.log2(value)) : 0);
-      cell.dataset.wide = String(value >= 16384);
-      cell.setAttribute('aria-label', value ? String(value) : 'Пусто');
-    });
+    renderer.render(state.board, move);
     mode.textContent =
       run || requestId
         ? run?.status === 'verified'
@@ -250,16 +244,9 @@ export function mount2048(host: GameHost): GameAdapter {
     }
   }
   function play(direction: Direction): void {
-    if (
-      disposed ||
-      busy ||
-      paused ||
-      failed ||
-      finished ||
-      requestId ||
-      !move2048(state, direction)
-    )
-      return;
+    if (disposed || busy || paused || failed || finished || requestId) return;
+    const before = [...state.board];
+    if (!move2048(state, direction)) return;
     if (run) pending.push(direction);
     if (state.status === 'over') finished = true;
     save();
@@ -269,7 +256,7 @@ export function mount2048(host: GameHost): GameAdapter {
         : Math.max(...state.board) >= 2048
           ? '2048 собрана! Продолжай увеличивать счёт.'
           : '';
-    render();
+    render({ before, direction });
     if (run && (pending.length >= MAX_2048_CHUNK || finished)) void sync();
   }
   function keydown(event: KeyboardEvent): void {
@@ -354,6 +341,7 @@ export function mount2048(host: GameHost): GameAdapter {
   }, 30000);
   return {
     pause() {
+      renderer.finish();
       paused = true;
       render();
     },
@@ -362,6 +350,7 @@ export function mount2048(host: GameHost): GameAdapter {
       render();
     },
     dispose() {
+      renderer.dispose();
       clearInterval(deliveryTimer);
       save();
       disposed = true;

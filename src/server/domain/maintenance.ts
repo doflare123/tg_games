@@ -365,6 +365,9 @@ export class MaintenanceService {
       const me = await this.telegram.me();
       await this.telegram.send({
         chat_id: payload.chatId,
+        ...(group.notificationThreadId === null
+          ? {}
+          : { message_thread_id: group.notificationThreadId }),
         text: `${payload.text}\n\nХочешь побить рекорд? Заходи играть!`,
         reply_markup: {
           inline_keyboard: [

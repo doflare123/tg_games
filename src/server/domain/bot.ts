@@ -12,6 +12,11 @@ export const GAME_COMMANDS: TelegramCommand[] = [
   })),
   { command: 'game_top', description: 'Рейтинг этой группы', is_ephemeral: true },
   {
+    command: 'game_notify_here',
+    description: 'Слать рекорды в эту тему (админ)',
+    is_ephemeral: true,
+  },
+  {
     command: 'game_notify_on',
     description: 'Включить объявления рекордов (админ)',
     is_ephemeral: true,
@@ -40,7 +45,7 @@ export class GameBotService {
     const msg = object(payload);
     const body = typeof msg.text === 'string' ? msg.text.trim() : '';
     const match =
-      /^\/(start|help|games|top|game_doom|game_mario|game_tetris|game_minesweeper|game_2048|game_snake|game_top|game_notify_on|game_notify_off)(?:@([a-zA-Z0-9_]+))?(?:\s|$)/.exec(
+      /^\/(start|help|games|top|game_doom|game_mario|game_tetris|game_minesweeper|game_2048|game_snake|game_top|game_notify_here|game_notify_on|game_notify_off)(?:@([a-zA-Z0-9_]+))?(?:\s|$)/.exec(
         body,
       );
     if (!match?.[1]) return;
@@ -56,6 +61,11 @@ export class GameBotService {
     };
     const isGroup = chat.type === 'group' || chat.type === 'supergroup';
     if (!isGroup && chat.type !== 'private') return;
+    // Ordinary reply threads are not forum topics and must not become a destination.
+    const threadId =
+      chat.type === 'supergroup' && msg.is_topic_message === true
+        ? integer(msg.message_thread_id, 1, Number.MAX_SAFE_INTEGER)
+        : null;
     if (isGroup) {
       const known = await this.repository.group(chatId);
       if (!known) {
@@ -98,7 +108,11 @@ export class GameBotService {
       response = 'Открыть рейтинг';
       message = isGroup ? 'Рекорды этой группы и общий рейтинг.' : 'Общий рейтинг Arcade.';
     }
-    if (command === 'game_notify_on' || command === 'game_notify_off') {
+    if (
+      command === 'game_notify_on' ||
+      command === 'game_notify_off' ||
+      command === 'game_notify_here'
+    ) {
       if (!isGroup) {
         message = 'Эта настройка доступна в группе.';
         target = 'leaderboard';
@@ -106,11 +120,15 @@ export class GameBotService {
         try {
           const group = await this.groups.configure(player, {
             groupId: chatId,
-            enabled: command === 'game_notify_on',
+            enabled: command !== 'game_notify_off',
+            ...(command === 'game_notify_here' ? { notificationThreadId: threadId } : {}),
           });
-          message = group.notificationsEnabled
-            ? 'Объявления включены: первый рекорд группы, новый рекорд группы или обгон в её топ-10. Не чаще одного сообщения за 5 минут.'
-            : 'Объявления о рекордах выключены.';
+          message =
+            command === 'game_notify_here'
+              ? `Объявления о рекордах включены ${threadId === null ? 'в общем чате группы' : 'в этой теме'}. Не чаще одного сообщения за 5 минут.`
+              : group.notificationsEnabled
+                ? 'Объявления включены: первый рекорд группы, новый рекорд группы или обгон в её топ-10. Не чаще одного сообщения за 5 минут.'
+                : 'Объявления о рекордах выключены.';
           target = `board_${chatId}`;
           response = 'Открыть рейтинг';
         } catch (error) {
@@ -137,6 +155,7 @@ export class GameBotService {
     // Never turn a failed private response into a public group message.
     await this.telegram.send({
       chat_id: chatId,
+      ...(threadId === null ? {} : { message_thread_id: threadId }),
       text: message,
       ...(isGroup
         ? {

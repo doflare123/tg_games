@@ -14,6 +14,10 @@ function decodeGroup(value: unknown): GroupRecord {
     active: r.active === 1,
     botAdmin: r.bot_admin === 1,
     notificationsEnabled: r.notifications_enabled === 1,
+    notificationThreadId:
+      r.notification_thread_id === null
+        ? null
+        : integer(r.notification_thread_id, 1, Number.MAX_SAFE_INTEGER),
     enabledAt: integer(r.enabled_at, 0, Number.MAX_SAFE_INTEGER),
     nextNotificationAt: integer(r.next_notification_at, 0, Number.MAX_SAFE_INTEGER),
   };
@@ -105,10 +109,18 @@ export class SqlSocialRepository implements SocialRepository {
     if (!Array.isArray(rows)) throw new Error('Invalid membership candidates');
     return rows.map((row) => integer(object(row).player_id, 1, Number.MAX_SAFE_INTEGER));
   }
-  async notifications(chatId: number, enabled: boolean, now: number) {
+  async notifications(chatId: number, enabled: boolean, now: number, threadId?: number | null) {
     await this.db.run(
-      `UPDATE groups SET enabled_at=CASE WHEN notifications_enabled=0 AND :enabled=1 THEN :now ELSE enabled_at END,notifications_enabled=:enabled WHERE id=:id`,
-      { ':id': chatId, ':enabled': Number(enabled), ':now': now },
+      `UPDATE groups SET enabled_at=CASE WHEN notifications_enabled=0 AND :enabled=1 THEN :now ELSE enabled_at END,
+       notifications_enabled=:enabled,
+       notification_thread_id=CASE WHEN :set_thread=1 THEN :thread ELSE notification_thread_id END WHERE id=:id`,
+      {
+        ':id': chatId,
+        ':enabled': Number(enabled),
+        ':now': now,
+        ':set_thread': Number(threadId !== undefined),
+        ':thread': threadId ?? null,
+      },
     );
   }
   async reserveAnnouncement(chatId: number, now: number, jobId: string) {

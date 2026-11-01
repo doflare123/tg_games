@@ -1301,6 +1301,183 @@ describe('native private game commands', () => {
   });
 });
 
+describe('notification topics', () => {
+  const payload = {
+    text: '/game_notify_here@arcade_bot',
+    chat: { id: -100, type: 'supergroup', title: 'Группа А' },
+    from: { id: 1, first_name: 'P1' },
+    is_topic_message: true,
+    message_thread_id: 42,
+    ephemeral_message_id: 7,
+  };
+  it('registers the command and saves the current topic with notifications enabled', async () => {
+    const s = await setup();
+    await s.bot.message(payload);
+    // Read through a new repository instance to verify the destination is persisted in SQL.
+    const reloaded = new SqlSocialRepository(s.local.db, s.local.repository);
+    expect(await reloaded.group(-100)).toMatchObject({
+      notificationsEnabled: true,
+      notificationThreadId: 42,
+      enabledAt: s.now(),
+    });
+    expect(s.sent[0]).toMatchObject({
+      chat_id: -100,
+      message_thread_id: 42,
+      ephemeral_message_parameters: { receiver_user_id: 1 },
+      reply_parameters: { ephemeral_message_id: 7 },
+    });
+    expect(s.sent[0]?.text).toContain('в этой теме');
+    await s.bot.configure();
+    expect(s.commands[0]?.commands).toContainEqual({
+      command: 'game_notify_here',
+      description: 'Слать рекорды в эту тему (админ)',
+      is_ephemeral: true,
+    });
+  });
+  it('rejects changes by a non-admin and ignores commands addressed to another bot', async () => {
+    const s = await setup();
+    await s.bot.message({ ...payload, from: { id: 2, first_name: 'P2' } });
+    expect(s.sent[0]?.text).toContain('только администратор');
+    expect(await s.repository.group(-100)).toMatchObject({
+      notificationsEnabled: false,
+      notificationThreadId: null,
+    });
+    await s.bot.message({ ...payload, text: '/game_notify_here@other_bot' });
+    expect(s.sent).toHaveLength(1);
+  });
+  it('does not configure destinations in private chats or for departed members', async () => {
+    const s = await setup();
+    await s.bot.message({ ...payload, chat: { id: 1, type: 'private', title: 'P1' } });
+    expect(s.sent[0]?.text).toContain('доступна в группе');
+    expect(s.sent[0]?.message_thread_id).toBeUndefined();
+    s.members.set(1, { active: false, admin: false });
+    await s.bot.message(payload);
+    expect(s.sent[1]?.text).toContain('больше не состоишь');
+    expect((await s.repository.group(-100))?.notificationThreadId).toBeNull();
+  });
+  it.each([undefined, null, 0, -1, 1.5, '42', Number.MAX_SAFE_INTEGER + 1])(
+    'rejects a malformed topic id %s without changing settings',
+    async (message_thread_id) => {
+      const s = await setup();
+      await expect(s.bot.message({ ...payload, message_thread_id })).rejects.toMatchObject({
+        code: 'BAD_INPUT',
+      });
+      expect(await s.repository.group(-100)).toMatchObject({
+        notificationsEnabled: false,
+        notificationThreadId: null,
+      });
+      expect(s.sent).toHaveLength(0);
+    },
+  );
+  it('validates destination settings received through the group service', async () => {
+    const s = await setup();
+    await expect(
+      s.groups.configure(s.player, {
+        groupId: -100,
+        enabled: true,
+        notificationThreadId: '42',
+      }),
+    ).rejects.toMatchObject({ code: 'BAD_INPUT' });
+    expect((await s.repository.group(-100))?.notificationsEnabled).toBe(false);
+  });
+  it('preserves the topic through off/on, UI settings and bot membership refreshes', async () => {
+    const s = await setup();
+    await s.bot.message(payload);
+    s.advance(1000);
+    await s.bot.message({ ...payload, text: '/game_notify_off', message_thread_id: 99 });
+    expect(await s.repository.group(-100)).toMatchObject({
+      notificationsEnabled: false,
+      notificationThreadId: 42,
+    });
+    await s.bot.message({ ...payload, text: '/game_notify_on', message_thread_id: 99 });
+    await s.groups.configure(s.player, { groupId: -100, enabled: false });
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const enabledAt = (await s.repository.group(-100))?.enabledAt;
+    await s.bot.botMembership({
+      chat: payload.chat,
+      new_chat_member: { status: 'administrator' },
+    });
+    s.advance(1000);
+    await s.bot.message({ ...payload, message_thread_id: 77 });
+    expect(await s.repository.group(-100)).toMatchObject({
+      notificationsEnabled: true,
+      notificationThreadId: 77,
+      enabledAt,
+    });
+  });
+  it('can return to the general chat without mistaking an ordinary reply thread for a topic', async () => {
+    const s = await setup();
+    await s.bot.message(payload);
+    await s.bot.message({ ...payload, is_topic_message: false, message_thread_id: 123 });
+    expect((await s.repository.group(-100))?.notificationThreadId).toBeNull();
+    expect(s.sent[1]?.message_thread_id).toBeUndefined();
+    expect(s.sent[1]?.text).toContain('в общем чате');
+    s.sent.length = 0;
+    s.advance(1);
+    await s.maintenance.result(await s.verified('general', 1, 100));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.message_thread_id).toBeUndefined();
+  });
+  it('routes queued records to the latest topic and keeps the shared cooldown and deduplication', async () => {
+    const s = await setup();
+    await s.bot.message(payload);
+    s.advance(1);
+    const run = await s.verified('topic-record', 1, 100);
+    await s.maintenance.result(run);
+    await s.bot.message({ ...payload, message_thread_id: 77 });
+    s.sent.length = 0;
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]).toMatchObject({ chat_id: -100, message_thread_id: 77 });
+    expect(s.sent[0]?.ephemeral_message_parameters).toBeUndefined();
+    await s.maintenance.result(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    await s.bot.message(payload);
+    s.sent.length = 0;
+    await s.maintenance.result(await s.verified('next-topic-record', 1, 200));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+  });
+  it('uses the current topic on a 429 retry without falling back when a topic is unavailable', async () => {
+    const s = await setup();
+    await s.bot.message(payload);
+    s.sent.length = 0;
+    s.advance(1);
+    await s.maintenance.result(await s.verified('retry-topic', 1, 100));
+    const send = vi.spyOn(s.telegram, 'send');
+    send.mockRejectedValueOnce(
+      Object.assign(new Error('Rate limited'), { code: 429, parameters: { retry_after: 3 } }),
+    );
+    await s.maintenance.sweep();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]?.[0].message_thread_id).toBe(42);
+    await s.bot.message({ ...payload, message_thread_id: 77 });
+    s.sent.length = 0;
+    send.mockClear();
+    send.mockRejectedValueOnce(Object.assign(new Error('Topic closed'), { code: 400 }));
+    s.advance(4001);
+    await s.maintenance.sweep();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]?.[0].message_thread_id).toBe(77);
+    expect(s.sent).toHaveLength(0);
+    s.advance(8001);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.message_thread_id).toBe(77);
+  });
+  it('does not share destinations between groups', async () => {
+    const s = await setup();
+    await s.bot.message(payload);
+    await s.repository.upsertGroup({ id: -200, title: 'B', active: true, botAdmin: true });
+    expect((await s.repository.group(-200))?.notificationThreadId).toBeNull();
+    await s.bot.message({ ...payload, chat: { ...payload.chat, id: -200 }, message_thread_id: 99 });
+    expect((await s.repository.group(-100))?.notificationThreadId).toBe(42);
+    expect((await s.repository.group(-200))?.notificationThreadId).toBe(99);
+  });
+});
+
 describe('delivery edge cases', () => {
   it('does not announce a result outside top ten and announces a later entry', async () => {
     const s = await setup();

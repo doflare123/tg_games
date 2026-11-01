@@ -11,6 +11,7 @@ export interface GroupRecord {
   active: boolean;
   botAdmin: boolean;
   notificationsEnabled: boolean;
+  notificationThreadId: number | null;
   enabledAt: number;
   nextNotificationAt: number;
 }

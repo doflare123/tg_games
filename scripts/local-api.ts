@@ -22,7 +22,11 @@ import {
   SNAKE_SOCIAL_COLUMNS,
   SNAKE_SOCIAL_INDEXES,
 } from '../src/server/platform/snake-ddl.ts';
-import { RUN_SOCIAL_COLUMNS, SOCIAL_DDL } from '../src/server/platform/social-ddl.ts';
+import {
+  GROUP_SOCIAL_COLUMNS,
+  RUN_SOCIAL_COLUMNS,
+  SOCIAL_DDL,
+} from '../src/server/platform/social-ddl.ts';
 import { Sql2048Repository } from '../src/server/platform/sql-2048.ts';
 import { SqlMineRepository } from '../src/server/platform/sql-minesweeper.ts';
 import { SqlArcadeRepository, type SqlDatabase } from '../src/server/platform/sql-repository.ts';
@@ -51,6 +55,10 @@ export function localRepository(file = ':memory:') {
     if (!columns.some((column) => column.name === name))
       database.exec(`ALTER TABLE runs ADD COLUMN ${name} ${definition}`);
   database.exec(SOCIAL_DDL);
+  const groupColumns = database.prepare('PRAGMA table_info(groups)').all();
+  for (const [name, definition] of Object.entries(GROUP_SOCIAL_COLUMNS))
+    if (!groupColumns.some((column) => column.name === name))
+      database.exec(`ALTER TABLE groups ADD COLUMN ${name} ${definition}`);
   database.exec(MANUAL_RESULTS_DDL);
   database.exec(MINESWEEPER_DDL);
   database.exec(SNAKE_DDL);

@@ -29,7 +29,12 @@ export interface SocialRepository {
   observeMember(member: Membership): Promise<void>;
   groupCandidates(userId: number): Promise<GroupRecord[]>;
   membersToRefresh(chatId: number, checkedSince: number, limit: number): Promise<number[]>;
-  notifications(chatId: number, enabled: boolean, now: number): Promise<void>;
+  notifications(
+    chatId: number,
+    enabled: boolean,
+    now: number,
+    threadId?: number | null,
+  ): Promise<void>;
   reserveAnnouncement(chatId: number, now: number, jobId: string): Promise<boolean>;
   enqueue(job: SocialJob): Promise<void>;
   claim(now: number): Promise<SocialJob | null>;

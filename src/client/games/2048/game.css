@@ -35,6 +35,7 @@
   text-align: right;
 }
 .puzzle-grid {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
@@ -44,7 +45,7 @@
   touch-action: none;
   user-select: none;
 }
-.puzzle-tile {
+.puzzle-number {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -54,40 +55,39 @@
   font-weight: 800;
   background: #20251f;
   color: #22291d;
-  transition: background-color 100ms;
 }
-.puzzle-tile[data-level="1"] {
+.puzzle-number[data-level="1"] {
   background: #d9dfc5;
 }
-.puzzle-tile[data-level="2"] {
+.puzzle-number[data-level="2"] {
   background: #c4d3a5;
 }
-.puzzle-tile[data-level="3"] {
+.puzzle-number[data-level="3"] {
   background: #b3ce91;
 }
-.puzzle-tile[data-level="4"] {
+.puzzle-number[data-level="4"] {
   background: #e8c67d;
 }
-.puzzle-tile[data-level="5"] {
+.puzzle-number[data-level="5"] {
   background: #f0ae6e;
 }
-.puzzle-tile[data-level="6"] {
+.puzzle-number[data-level="6"] {
   background: #f0804e;
 }
-.puzzle-tile[data-level="7"] {
+.puzzle-number[data-level="7"] {
   background: #e19a9b;
 }
-.puzzle-tile[data-level="8"] {
+.puzzle-number[data-level="8"] {
   background: #c1a5df;
 }
-.puzzle-tile[data-level="9"] {
+.puzzle-number[data-level="9"] {
   background: #b2b9ed;
 }
-.puzzle-tile[data-level="10"] {
+.puzzle-number[data-level="10"] {
   background: #f4d767;
   font-size: clamp(19px, 5vw, 34px);
 }
-.puzzle-tile[data-level="11"] {
+.puzzle-number[data-level="11"] {
   background: #ffe37d;
   font-size: clamp(18px, 4.5vw, 32px);
   box-shadow: inset 0 0 0 2px #fff3b6;
@@ -98,11 +98,21 @@
   font-size: 14px;
   line-height: 1.5;
 }
-.puzzle-tile[data-wide="true"] {
+.puzzle-number[data-wide="true"] {
   font-size: clamp(13px, 3.8vw, 26px);
 }
-@media (prefers-reduced-motion: reduce) {
-  .puzzle-tile {
-    transition: none;
-  }
+.puzzle-tile[data-moving="true"] {
+  background: #20251f;
+  color: transparent;
+  box-shadow: none;
+}
+.puzzle-motion-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+.puzzle-flying {
+  position: absolute;
+  will-change: transform;
 }

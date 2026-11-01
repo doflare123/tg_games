@@ -1,4 +1,10 @@
 import { index, integer, table, text } from 'sdk/db';
+// Triggers are installed by scripts/moderate-ranking.ts during explicit moderation.
+export const rankingBlocks = table('ranking_blocks', {
+  playerId: integer('player_id').primaryKey(),
+  reason: text('reason').notNull(),
+  createdAt: integer('created_at').notNull(),
+});
 export const snakeRuns = table(
   'snake_runs',
   {
@@ -122,6 +128,7 @@ export const groups = table('groups', {
   active: integer('active').notNull().default(1),
   botAdmin: integer('bot_admin').notNull().default(0),
   notificationsEnabled: integer('notifications_enabled').notNull().default(0),
+  notificationThreadId: integer('notification_thread_id'),
   enabledAt: integer('enabled_at').notNull().default(0),
   nextNotificationAt: integer('next_notification_at').notNull().default(0),
   lastNotificationJob: text('last_notification_job').notNull().default(''),

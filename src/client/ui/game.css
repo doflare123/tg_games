@@ -167,6 +167,34 @@
     monospace;
   color: #8e9e7d;
 }
+.direction-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 64px);
+  grid-template-rows: repeat(2, 52px);
+  gap: 8px;
+  justify-content: center;
+  margin: 20px auto;
+}
+.direction-pad .button {
+  padding: 8px;
+  font-size: 24px;
+}
+.direction-up {
+  grid-column: 2;
+  grid-row: 1;
+}
+.direction-left {
+  grid-column: 1;
+  grid-row: 2;
+}
+.direction-down {
+  grid-column: 2;
+  grid-row: 2;
+}
+.direction-right {
+  grid-column: 3;
+  grid-row: 2;
+}
 .touch-controls {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));

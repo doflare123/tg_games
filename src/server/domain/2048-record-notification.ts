@@ -21,7 +21,7 @@ export function record2048Notification(
           (!old || entry.rank < old.rank),
       );
   if (!first && !rival) return null;
-  const heading = `🏆 ${run.playerName} — №${position.rank} в группе!\n2048 · ${position.score} очков · плитка ${position.maxTile}.`;
+  const heading = `🏆 ${run.playerName} — №${position.rank} в группе!\n2048 · ${position.score} очков · плитка ${position.maxTile}.\n${run.state.version === 2 ? 'Режим: рост плиток.' : 'Режим: классика.'}`;
   if (first) return `${heading}\nПервый рекорд группы!`;
   if (!rival) return null;
   const difference =

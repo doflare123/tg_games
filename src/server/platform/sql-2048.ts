@@ -115,7 +115,7 @@ export class Sql2048Repository implements Repository2048 {
       SELECT *,row_number() OVER (ORDER BY score DESC,created_at ASC,id ASC) AS place FROM attempts WHERE personal=1
     ) SELECT * FROM ranked WHERE place<=50 OR player_id=:player ORDER BY place`,
       {
-        ':ruleset': RULESET_2048,
+        ':ruleset': scope.ruleset ?? RULESET_2048,
         ':since': since,
         ':player': player.id,
         ':maxOrder': scope.maxResultOrder ?? null,
@@ -136,6 +136,7 @@ export class Sql2048Repository implements Repository2048 {
       };
     });
     return decodeBoard2048({
+      ruleset: scope.ruleset ?? RULESET_2048,
       period,
       entries: entries.filter((r) => typeof r.rank === 'number' && r.rank <= 50),
       me: entries.find((r) => r.playerId === player.id) ?? null,

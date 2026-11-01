@@ -5,7 +5,10 @@ import {
   create2048,
   DIRECTIONS,
   type Direction,
+  LEGACY_2048_RULESET,
+  minimum2048Tile,
   move2048,
+  RULESET_2048,
   type State2048,
 } from '../src/games/2048/engine.ts';
 import { Service2048 } from '../src/server/domain/2048.ts';
@@ -14,7 +17,7 @@ import { decodeState2048 } from '../src/shared/2048.ts';
 import { parseLaunch } from '../src/shared/launch.ts';
 
 function state(board: number[]): State2048 {
-  return { board, score: 0, moves: 0, rng: 123, status: 'playing' };
+  return { version: 2, board, score: 0, moves: 0, rng: 123, status: 'playing' };
 }
 function validMove(s: State2048): Direction {
   for (const direction of DIRECTIONS) if (move2048(structuredClone(s), direction)) return direction;
@@ -56,7 +59,7 @@ describe('2048 core', () => {
     expect(move2048(stable, 'left')).toBe(false);
     expect(stable).toEqual(before);
   });
-  it('detects a blocked board, continues after 2048, and caps the move count', () => {
+  it('detects a blocked board and continues after 2048 and 20000 moves', () => {
     const blocked = [2, 4, 2, 4, 4, 2, 4, 2, 2, 4, 2, 4, 4, 2, 4, 2];
     expect(canMove2048(blocked)).toBe(false);
     const s = state([1024, 1024, ...Array<number>(14).fill(0)]);
@@ -65,12 +68,14 @@ describe('2048 core', () => {
     expect(s.status).toBe('playing');
     s.moves = 19999;
     move2048(s, validMove(s));
-    expect(s.status).toBe('over');
-    expect(move2048(s, 'down')).toBe(false);
+    expect(s.status).toBe('playing');
+    expect(s.moves).toBe(20000);
+    expect(move2048(s, validMove(s))).toBe(true);
+    expect(s.moves).toBe(20001);
   });
   it('validates saved tiles and supports the direct launch', () => {
     expect(() => decodeState2048({ ...create2048(1), board: Array(16).fill(3) })).toThrow();
-    expect(() => decodeState2048({ ...create2048(1), moves: 20001 })).toThrow();
+    expect(decodeState2048({ ...create2048(1), moves: 20001 }).moves).toBe(20001);
     expect(parseLaunch('game_2048')).toEqual({ view: 'game', game: '2048' });
   });
   it('ends immediately when spawning the last tile leaves no legal moves', () => {
@@ -78,6 +83,33 @@ describe('2048 core', () => {
     expect(move2048(s, 'left')).toBe(true);
     expect(s.status).toBe('over');
     expect(canMove2048(s.board)).toBe(false);
+  });
+  it.each([
+    [4096, 2],
+    [8192, 4],
+    [16384, 8],
+    [32768, 16],
+  ])('grades spawns slowly at tile %i', (largest, minimum) => {
+    const s = state([largest, ...Array<number>(15).fill(0)]);
+    expect(minimum2048Tile(s)).toBe(minimum);
+    move2048(s, 'right');
+    expect(
+      s.board.filter((v) => v && v !== largest).every((v) => v === minimum || v === minimum * 2),
+    ).toBe(true);
+    const classic = { ...state([largest, ...Array<number>(15).fill(0)]), version: 1 as const };
+    expect(minimum2048Tile(classic)).toBe(2);
+    move2048(classic, 'right');
+    expect(classic.board.filter((v) => v && v !== largest).every((v) => v === 2 || v === 4)).toBe(
+      true,
+    );
+  });
+  it('keeps a precise result when the numeric representation is exhausted', () => {
+    const s = state([2, 2, ...Array<number>(14).fill(0)]);
+    s.score = Number.MAX_SAFE_INTEGER - 1;
+    expect(move2048(s, 'left')).toBe(true);
+    expect(s.status).toBe('over');
+    expect(Number.isSafeInteger(s.score)).toBe(true);
+    expect(decodeState2048(s)).toEqual(s);
   });
 });
 
@@ -101,6 +133,63 @@ function setup() {
 }
 const player = { id: 1, name: 'Игрок' };
 describe('authoritative 2048 rankings', () => {
+  it('keeps legacy saves and rankings separate and replays extended progressive games', async () => {
+    const s = setup();
+    const legacy = await s.service.create(player, {
+      requestId: 'legacy_request_1234567',
+      ruleset: LEGACY_2048_RULESET,
+    });
+    expect(legacy.state.version).toBe(1);
+    const oldState = {
+      board: [8192, ...Array<number>(15).fill(0)],
+      rng: 123,
+      score: 500,
+      moves: 19999,
+      status: 'playing',
+    };
+    await s.db.run('UPDATE puzzle2048_runs SET state_json=:state WHERE id=:id', {
+      ':id': legacy.id,
+      ':state': JSON.stringify(oldState),
+    });
+    const old = await s.service.submit(player, {
+      runId: legacy.id,
+      revision: 0,
+      moves: ['right'],
+      finish: true,
+    });
+    expect(old.state.version).toBe(1);
+    expect(old.state.board.some((v) => v === 2 || v === 4)).toBe(true);
+    expect((await s.service.leaderboard(player, { period: 'all' })).me).toBeNull();
+    expect(
+      (await s.service.leaderboard(player, { period: 'all', ruleset: LEGACY_2048_RULESET })).me
+        ?.runId,
+    ).toBe(legacy.id);
+    const current = await s.service.create(player, { requestId: 'current_request_1234567' });
+    expect(current.ruleset).toBe(RULESET_2048);
+    const snapshot = {
+      ...current.state,
+      board: [8192, ...Array<number>(15).fill(0)],
+      score: 500,
+      moves: 20001,
+    };
+    await s.db.run('UPDATE puzzle2048_runs SET state_json=:state,revision=20001 WHERE id=:id', {
+      ':id': current.id,
+      ':state': JSON.stringify(snapshot),
+    });
+    const extended = await s.service.submit(player, {
+      runId: current.id,
+      revision: 20001,
+      moves: ['right'],
+      finish: true,
+    });
+    expect(extended.state.moves).toBe(20002);
+    expect(extended.state.board.some((v) => v === 4 || v === 8)).toBe(true);
+    expect((await s.service.leaderboard(player, { period: 'all' })).me?.runId).toBe(current.id);
+    expect(
+      (await s.service.leaderboard(player, { period: 'all', ruleset: LEGACY_2048_RULESET })).me
+        ?.runId,
+    ).toBe(legacy.id);
+  });
   it('replays moves, ignores claimed scores and identities, retries idempotently and prevents post-finish changes', async () => {
     const s = setup();
     const initial = await s.service.create(player, {

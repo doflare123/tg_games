@@ -98,33 +98,8 @@
   font-size: 14px;
   line-height: 1.5;
 }
-.puzzle-pad {
-  display: grid;
-  grid-template-columns: repeat(3, 64px);
-  grid-template-rows: repeat(2, 52px);
-  gap: 8px;
-  justify-content: center;
-  margin: 20px auto;
-}
-.puzzle-pad .button {
-  padding: 8px;
-  font-size: 24px;
-}
-.puzzle-up {
-  grid-column: 2;
-  grid-row: 1;
-}
-.puzzle-left {
-  grid-column: 1;
-  grid-row: 2;
-}
-.puzzle-down {
-  grid-column: 2;
-  grid-row: 2;
-}
-.puzzle-right {
-  grid-column: 3;
-  grid-row: 2;
+.puzzle-tile[data-wide="true"] {
+  font-size: clamp(13px, 3.8vw, 26px);
 }
 @media (prefers-reduced-motion: reduce) {
   .puzzle-tile {

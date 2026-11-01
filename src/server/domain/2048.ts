@@ -4,6 +4,8 @@ import {
   MAX_2048_CHUNK,
   move2048,
   RULESET_2048,
+  RULESETS_2048,
+  type Ruleset2048,
 } from '../../games/2048/engine.ts';
 import type { Board2048, Run2048 } from '../../shared/2048.ts';
 import { decodeState2048 } from '../../shared/2048.ts';
@@ -20,6 +22,7 @@ export interface Stored2048 extends Run2048 {
   socialProcessed: boolean;
 }
 export interface BoardScope2048 {
+  ruleset?: Ruleset2048;
   groupId?: number;
   membershipCheckedSince?: number;
   maxResultOrder?: number;
@@ -48,7 +51,9 @@ export class Service2048 {
     private readonly clock: Clock,
   ) {}
   async create(player: Player, input: unknown): Promise<Run2048> {
-    const requestId = text(object(input).requestId, 16, 64);
+    const data = object(input);
+    const requestId = text(data.requestId, 16, 64);
+    const ruleset = data.ruleset === undefined ? RULESET_2048 : oneOf(data.ruleset, RULESETS_2048);
     if (!/^[a-zA-Z0-9_-]+$/.test(requestId)) throw new AppError('BAD_INPUT', 'Некорректный ключ');
     const id = `${player.id}:2048:${requestId}`;
     const existing = await this.repository.get(id);
@@ -61,9 +66,9 @@ export class Service2048 {
         id,
         playerId: player.id,
         playerName: player.name,
-        ruleset: RULESET_2048,
+        ruleset,
         revision: 0,
-        state: create2048(this.clock.seed()),
+        state: create2048(this.clock.seed(), ruleset),
         status: 'active',
         createdAt: now,
         expiresAt: now + 86400000,
@@ -84,7 +89,7 @@ export class Service2048 {
   }
   async submit(player: Player, input: unknown): Promise<Run2048> {
     const data = object(input);
-    const revision = integer(data.revision, 0, 20000);
+    const revision = integer(data.revision, 0, Number.MAX_SAFE_INTEGER - 2);
     if (
       !Array.isArray(data.moves) ||
       data.moves.length > MAX_2048_CHUNK ||
@@ -99,11 +104,13 @@ export class Service2048 {
     if (run.revision === revision + 1 && run.lastSubmission === receipt) return view(run);
     if (run.revision !== revision || run.status !== 'active')
       throw new AppError('CONFLICT', 'Партия уже обновлена или завершена');
-    if (run.ruleset !== RULESET_2048)
+    if (!RULESETS_2048.includes(run.ruleset as Ruleset2048))
       throw new AppError('UNAVAILABLE', 'Версия правил больше не поддерживается');
     if (this.clock.now() > run.expiresAt)
       throw new AppError('EXPIRED', 'Срок партии истёк (24 часа)');
     const state = decodeState2048(run.state);
+    if (state.version !== (run.ruleset === RULESET_2048 ? 2 : 1))
+      throw new AppError('CONFLICT', 'Правила сохранённой партии не совпадают');
     for (const direction of moves)
       if (!move2048(state, direction)) throw new AppError('BAD_INPUT', 'Недопустимый ход');
     const next: Stored2048 = {
@@ -119,10 +126,14 @@ export class Service2048 {
     return view(next);
   }
   async leaderboard(player: Player, input: unknown): Promise<Board2048> {
-    const period = oneOf(object(input).period, ['all', 'week']);
+    const data = object(input);
+    const period = oneOf(data.period, ['all', 'week']);
+    const ruleset = data.ruleset === undefined ? RULESET_2048 : oneOf(data.ruleset, RULESETS_2048);
     const date = new Date(this.clock.now());
     date.setUTCHours(0, 0, 0, 0);
     date.setUTCDate(date.getUTCDate() - ((date.getUTCDay() + 6) % 7));
-    return this.repository.leaderboard(player, period, period === 'all' ? 0 : date.getTime());
+    return this.repository.leaderboard(player, period, period === 'all' ? 0 : date.getTime(), {
+      ruleset,
+    });
   }
 }

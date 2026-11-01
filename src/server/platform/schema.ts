@@ -1,4 +1,30 @@
 import { index, integer, table, text } from 'sdk/db';
+export const snakeRuns = table(
+  'snake_runs',
+  {
+    id: text('id').primaryKey(),
+    playerId: integer('player_id').notNull(),
+    playerName: text('player_name').notNull(),
+    ruleset: text('ruleset').notNull(),
+    size: integer('size').notNull(),
+    revision: integer('revision').notNull(),
+    stateJson: text('state_json').notNull(),
+    status: text('status').notNull(),
+    score: integer('score').notNull(),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    lastSubmission: text('last_submission'),
+    verifiedAt: integer('verified_at').notNull().default(0),
+    verifiedOrder: integer('verified_order').notNull().default(0),
+    socialProcessed: integer('social_processed').notNull().default(1),
+  },
+  (t) => ({
+    leaderboard: index('snake_leaderboard').on(t.ruleset, t.size, t.status, t.score, t.createdAt),
+    recent: index('snake_recent').on(t.playerId, t.createdAt),
+    verifiedOrder: index('snake_verified_order').on(t.verifiedOrder),
+    pendingSocial: index('snake_pending_social').on(t.status, t.socialProcessed, t.verifiedOrder),
+  }),
+);
 export const puzzle2048Runs = table(
   'puzzle2048_runs',
   {

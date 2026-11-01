@@ -2,7 +2,7 @@ import type { GroupRecord, Membership } from '../../shared/groups.ts';
 import type { StoredRun } from './repository.ts';
 export interface JobPayload {
   type: 'record';
-  game?: 'tetris' | 'minesweeper' | '2048';
+  game?: 'tetris' | 'minesweeper' | '2048' | 'snake';
   chatId: number;
   playerId: number;
   mode: string;
@@ -39,6 +39,7 @@ export interface SocialRepository {
     error?: string,
   ): Promise<void>;
   retry(job: SocialJob, dueAt: number, error: string): Promise<void>;
+  recover2048Expired(now: number): Promise<number>;
   pendingResults(limit: number): Promise<StoredRun[]>;
   processed(runId: string): Promise<void>;
 }

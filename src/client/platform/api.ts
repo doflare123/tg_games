@@ -1,9 +1,11 @@
+import { RULESET_2048, type Ruleset2048 } from '../../games/2048/engine.ts';
 import type { TetrisMode } from '../../games/tetris/types.ts';
 import { decodeBoard2048, decodeRun2048 } from '../../shared/2048.ts';
 import type { EndpointInput, EndpointName, Player, ReplayInput } from '../../shared/contracts.ts';
 import { AppError, integer, object, oneOf, text } from '../../shared/errors.ts';
 import { decodeGroup } from '../../shared/groups.ts';
 import { decodeMineLeaderboard, decodeMineResult } from '../../shared/minesweeper.ts';
+import { decodeSnakeBoard, decodeSnakeRun } from '../../shared/snake.ts';
 import { decodeLeaderboard, decodeRun } from '../../shared/validation.ts';
 import { inTelegram, telegram } from './telegram.ts';
 export const hasApi = inTelegram || import.meta.env.DEV;
@@ -60,8 +62,20 @@ async function call<K extends EndpointName>(name: K, input: EndpointInput<K>): P
   throw new AppError('UNAUTHORIZED', 'Рейтинговая игра доступна внутри Telegram');
 }
 export const api = {
+  async createSnake(requestId: string, size: number) {
+    return decodeSnakeRun(await call('createSnakeRun', { requestId, size }));
+  },
+  async getSnake(runId: string) {
+    return decodeSnakeRun(await call('getSnakeRun', { runId }));
+  },
+  async submitSnake(input: EndpointInput<'submitSnakeReplay'>) {
+    return decodeSnakeRun(await call('submitSnakeReplay', input));
+  },
+  async snakeLeaderboard(size: number, period: 'all' | 'week') {
+    return decodeSnakeBoard(await call('getSnakeLeaderboard', { size, period }));
+  },
   async create2048(requestId: string) {
-    return decodeRun2048(await call('create2048Run', { requestId }));
+    return decodeRun2048(await call('create2048Run', { requestId, ruleset: RULESET_2048 }));
   },
   async get2048(runId: string) {
     return decodeRun2048(await call('get2048Run', { runId }));
@@ -69,8 +83,8 @@ export const api = {
   async submit2048(input: EndpointInput<'submit2048Moves'>) {
     return decodeRun2048(await call('submit2048Moves', input));
   },
-  async leaderboard2048(period: 'all' | 'week') {
-    return decodeBoard2048(await call('get2048Leaderboard', { period }));
+  async leaderboard2048(period: 'all' | 'week', ruleset: Ruleset2048 = RULESET_2048) {
+    return decodeBoard2048(await call('get2048Leaderboard', { period, ruleset }));
   },
   async submitMine(input: EndpointInput<'submitMineResult'>) {
     return decodeMineResult(await call('submitMineResult', input));

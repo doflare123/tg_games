@@ -40,7 +40,7 @@ export class GameBotService {
     const msg = object(payload);
     const body = typeof msg.text === 'string' ? msg.text.trim() : '';
     const match =
-      /^\/(start|help|games|top|game_doom|game_mario|game_tetris|game_minesweeper|game_2048|game_top|game_notify_on|game_notify_off)(?:@([a-zA-Z0-9_]+))?(?:\s|$)/.exec(
+      /^\/(start|help|games|top|game_doom|game_mario|game_tetris|game_minesweeper|game_2048|game_snake|game_top|game_notify_on|game_notify_off)(?:@([a-zA-Z0-9_]+))?(?:\s|$)/.exec(
         body,
       );
     if (!match?.[1]) return;

@@ -1,3 +1,4 @@
+import { LEGACY_2048_RULESET, RULESET_2048 } from '../../games/2048/engine.ts';
 import { api, hasApi } from '../platform/api.ts';
 import { button, element, errorMessage } from './dom.ts';
 
@@ -20,7 +21,17 @@ export function mount2048Leaderboard(host: HTMLElement): () => void {
     period.append(option);
   }
   const filters = element('div', 'board-filters');
-  filters.append(period);
+  const rules = element('select', 'select');
+  rules.setAttribute('aria-label', 'Правила рейтинга 2048');
+  for (const [value, title] of [
+    [RULESET_2048, 'Рост плиток'],
+    [LEGACY_2048_RULESET, 'Классика · старые рекорды'],
+  ] as const) {
+    const option = element('option', '', title);
+    option.value = value;
+    rules.append(option);
+  }
+  filters.append(rules, period);
   const results = element('div', 'board-results');
   results.setAttribute('aria-live', 'polite');
   section.append(
@@ -38,7 +49,10 @@ export function mount2048Leaderboard(host: HTMLElement): () => void {
     results.replaceChildren(element('p', 'empty-state', 'Загружаем рекорды…'));
     try {
       if (!hasApi) throw new Error('Открой Arcade внутри Telegram, чтобы увидеть рейтинги.');
-      const board = await api.leaderboard2048(period.value === 'week' ? 'week' : 'all');
+      const board = await api.leaderboard2048(
+        period.value === 'week' ? 'week' : 'all',
+        rules.value === LEGACY_2048_RULESET ? LEGACY_2048_RULESET : RULESET_2048,
+      );
       if (disposed || current !== request) return;
       results.replaceChildren();
       if (!board.entries.length) {
@@ -90,6 +104,9 @@ export function mount2048Leaderboard(host: HTMLElement): () => void {
     }
   }
   period.addEventListener('change', () => {
+    void update();
+  });
+  rules.addEventListener('change', () => {
     void update();
   });
   void update();

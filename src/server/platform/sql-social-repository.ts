@@ -25,7 +25,8 @@ function decodeJob(value: unknown): SocialJob {
   const chatId = groupId(p.chatId);
   const payload: JobPayload = {
     type: 'record',
-    game: p.game === undefined ? 'tetris' : oneOf(p.game, ['tetris', 'minesweeper', '2048']),
+    game:
+      p.game === undefined ? 'tetris' : oneOf(p.game, ['tetris', 'minesweeper', '2048', 'snake']),
     chatId,
     playerId: integer(p.playerId, 1, Number.MAX_SAFE_INTEGER),
     mode: text(p.mode, 1, 32),
@@ -95,6 +96,7 @@ export class SqlSocialRepository implements SocialRepository {
       SELECT player_id FROM runs WHERE status='verified' UNION SELECT player_id FROM manual_results
       UNION SELECT player_id FROM minesweeper_runs WHERE status='won'
       UNION SELECT player_id FROM puzzle2048_runs WHERE status='verified'
+      UNION SELECT player_id FROM snake_runs WHERE status='verified'
     ) SELECT p.player_id FROM players p LEFT JOIN group_memberships m ON m.user_id=p.player_id AND m.group_id=:group
       WHERE m.updated_at IS NULL OR m.updated_at<:since
       ORDER BY CASE WHEN m.updated_at IS NULL THEN 0 ELSE 1 END,m.updated_at,p.player_id LIMIT :limit`,
@@ -148,6 +150,19 @@ export class SqlSocialRepository implements SocialRepository {
       `UPDATE social_jobs SET status='pending',due_at=:due,lease_until=0,error=:error WHERE id=:id AND attempts=:attempt`,
       { ':id': job.id, ':attempt': job.attempts, ':due': dueAt, ':error': error.slice(0, 300) },
     );
+  }
+  async recover2048Expired(now: number): Promise<number> {
+    // Repair only jobs that never had a valid delivery window, within the last day.
+    // Successful/suppressed jobs and ordinary expired jobs are never replayed.
+    const result = await this.db.run(
+      `UPDATE social_jobs SET status='pending',due_at=:now,
+      expires_at=:expires,attempts=0,lease_until=0,error='Recovered invalid initial deadline'
+      WHERE id IN (SELECT id FROM social_jobs WHERE status='expired' AND expires_at<due_at
+        AND due_at>=:since AND json_extract(payload,'$.game')='2048' ORDER BY due_at LIMIT 3)
+      RETURNING id`,
+      { ':now': now, ':expires': now + 86400000, ':since': now - 86400000 },
+    );
+    return returnedRows(result).length;
   }
   async pendingResults(limit: number) {
     const rows = await this.db.all(

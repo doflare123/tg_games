@@ -81,6 +81,7 @@ try {
     'Тетрис',
     'Сапёр',
     '2048',
+    'Змейка',
   ]);
   assert.doesNotMatch((await page.locator('body').textContent()) ?? '', /doom|mario|дум|марио/i);
   assert.doesNotMatch(
@@ -128,7 +129,50 @@ try {
   assert.ok(
     (await page.locator('.puzzle-stats').textContent())?.includes(`ходов ${swipeState.moves + 1}`),
   );
+  // A restored free game passes the former move limit and raises spawning at 8192.
+  await page.evaluate(() =>
+    localStorage.setItem(
+      'arcade:2048:v1',
+      JSON.stringify({
+        state: {
+          version: 2,
+          board: [8192, 8192, ...Array(14).fill(0)],
+          rng: 123,
+          score: 0,
+          moves: 20000,
+          status: 'playing',
+        },
+        run: null,
+        pending: [],
+        requestId: null,
+        finished: false,
+      }),
+    ),
+  );
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.locator('.puzzle-grid').waitFor();
+  await page.keyboard.press('ArrowLeft');
+  assert.equal(await page.locator('.puzzle-tile').first().textContent(), '16384');
+  assert.ok((await page.locator('.puzzle-stats').textContent())?.includes('ходов 20001'));
+  assert.ok((await page.locator('.puzzle-stats').textContent())?.includes('новые 8/16'));
+  assert.doesNotMatch(
+    (await page.locator('.puzzle2048').textContent()) ?? '',
+    /до 20.?000|сервер/i,
+  );
   if (!production) {
+    await page.evaluate(async () => {
+      const response = await fetch('/__dev/rpc/create2048Run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestId: crypto.randomUUID(), ruleset: '2048-v1' }),
+      });
+      const result = (await response.json()) as { result: { id: string } };
+      await fetch('/__dev/rpc/submit2048Moves', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId: result.result.id, revision: 0, moves: [], finish: true }),
+      });
+    });
     await page.getByRole('button', { name: 'Рейтинговая партия', exact: true }).click();
     await page.waitForFunction(() =>
       document.querySelector('.puzzle-status')?.textContent?.includes('Соединяй плитки'),
@@ -163,6 +207,11 @@ try {
     );
     await page.getByLabel('Период рейтинга 2048').selectOption('week');
     await page.locator('.personal-record').waitFor();
+    await page.getByLabel('Правила рейтинга 2048').selectOption('2048-v1');
+    await page.locator('.personal-record').waitFor();
+    assert.ok(
+      (await page.locator('.leaderboard tbody').textContent())?.includes('Локальный игрок'),
+    );
   } else {
     await page.getByRole('button', { name: '← Назад', exact: true }).click();
   }

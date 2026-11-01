@@ -4,6 +4,7 @@ import { api, hasApi } from '../platform/api.ts';
 import { mount2048Leaderboard } from './2048-leaderboard.ts';
 import { button, element, errorMessage, formatTime } from './dom.ts';
 import { mountMineLeaderboard } from './mine-leaderboard.ts';
+import { mountSnakeLeaderboard } from './snake-leaderboard.ts';
 
 // This single recovery was explicitly approved without a public label; its stored source stays manual.
 const OWNER_APPROVED_RECOVERY = 'manual:recovery:2026-10-31:930852883:marathon:89768';
@@ -14,6 +15,7 @@ export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): ()
     ['tetris', 'Тетрис'],
     ['minesweeper', 'Сапёр'],
     ['2048', '2048'],
+    ['snake', 'Змейка'],
   ]) {
     const option = element('option', '', label);
     option.value = value ?? 'tetris';
@@ -27,11 +29,13 @@ export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): ()
   picker.addEventListener('change', () => {
     dispose();
     dispose =
-      picker.value === '2048'
-        ? mount2048Leaderboard(content)
-        : picker.value === 'minesweeper'
-          ? mountMineLeaderboard(content)
-          : mountTetrisLeaderboard(content, initialGroupId);
+      picker.value === 'snake'
+        ? mountSnakeLeaderboard(content)
+        : picker.value === '2048'
+          ? mount2048Leaderboard(content)
+          : picker.value === 'minesweeper'
+            ? mountMineLeaderboard(content)
+            : mountTetrisLeaderboard(content, initialGroupId);
   });
   return () => dispose();
 }

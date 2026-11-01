@@ -3,8 +3,10 @@ import {
   DIRECTIONS,
   type Direction,
   MAX_2048_CHUNK,
+  minimum2048Tile,
   move2048,
-  RULESET_2048,
+  RULESETS_2048,
+  type Ruleset2048,
 } from '../../../games/2048/engine.ts';
 import { decodeRun2048, decodeState2048, type Run2048 } from '../../../shared/2048.ts';
 import { object, oneOf, text } from '../../../shared/errors.ts';
@@ -29,6 +31,7 @@ export function mount2048(host: GameHost): GameAdapter {
   let paused = false;
   let storageFailed = false;
   let touch: { id: number; x: number; y: number } | null = null;
+  let pollUntil = Date.now() + 15 * 60000;
   const panel = element('section', 'puzzle2048');
   const toolbar = element('div', 'puzzle-toolbar');
   const ranked = button(
@@ -93,12 +96,12 @@ export function mount2048(host: GameHost): GameAdapter {
     'button secondary',
   );
   actions.append(finish, retry, leaveRanked);
-  const pad = element('div', 'puzzle-pad');
+  const pad = element('div', 'direction-pad');
   const moveButtons = DIRECTIONS.map((direction) => {
     const control = button(
       { left: '←', right: '→', up: '↑', down: '↓' }[direction],
       () => play(direction),
-      `button secondary puzzle-${direction}`,
+      `button secondary direction-${direction}`,
     );
     control.setAttribute(
       'aria-label',
@@ -108,6 +111,7 @@ export function mount2048(host: GameHost): GameAdapter {
     return control;
   });
   const storageNote = element('p', 'control-hint');
+  const ruleHint = element('p', 'control-hint');
   panel.append(
     toolbar,
     mode,
@@ -121,13 +125,7 @@ export function mount2048(host: GameHost): GameAdapter {
       'control-hint',
       'Стрелки / WASD или свайпы. Одинаковые плитки сливаются: 2 + 2 = 4 и +4 очка. После 2048 можно продолжать. Рейтинг — лучший счёт, очки партий не суммируются. Можно завершить партию и записать текущий счёт.',
     ),
-    element(
-      'p',
-      'control-hint',
-      hasApi
-        ? 'Рейтинговая партия действует 24 часа, до 20 000 ходов. Свободные партии не входят в рейтинг.'
-        : 'Рейтинг доступен внутри Telegram. Сейчас можно играть свободно.',
-    ),
+    ruleHint,
     storageNote,
   );
   host.container.replaceChildren(panel);
@@ -145,8 +143,9 @@ export function mount2048(host: GameHost): GameAdapter {
     if (disposed) return;
     cells.forEach((cell, index) => {
       const value = state.board[index] ?? 0;
-      cell.textContent = value ? String(value) : '';
+      cell.textContent = value ? (value < 1000000 ? String(value) : `2^${Math.log2(value)}`) : '';
       cell.dataset.level = String(value ? Math.min(11, Math.log2(value)) : 0);
+      cell.dataset.wide = String(value >= 16384);
       cell.setAttribute('aria-label', value ? String(value) : 'Пусто');
     });
     mode.textContent =
@@ -156,7 +155,7 @@ export function mount2048(host: GameHost): GameAdapter {
           : '● РЕЙТИНГОВАЯ ПАРТИЯ'
         : '○ СВОБОДНАЯ ПАРТИЯ';
     score.textContent = `${state.score.toLocaleString('ru-RU')} очков`;
-    tile.textContent = `Плитка ${Math.max(...state.board)} · ходов ${state.moves}`;
+    tile.textContent = `Плитка ${Math.max(...state.board)} · ходов ${state.moves} · новые ${minimum2048Tile(state)}/${minimum2048Tile(state) * 2}`;
     const locked =
       busy || failed || finished || paused || state.status === 'over' || requestId !== null;
     for (const control of moveButtons) control.disabled = locked;
@@ -170,6 +169,10 @@ export function mount2048(host: GameHost): GameAdapter {
     ranked.disabled = !hasApi || busy || unsettled;
     free.disabled = busy || unsettled;
     board.setAttribute('aria-disabled', String(locked));
+    ruleHint.textContent =
+      state.version === 1
+        ? 'Классическая партия: новые плитки 2/4. Её рекорд сохранится в «Классика · старые рекорды». Новая партия начнётся с ростом плиток.'
+        : `Без лимита ходов. После 8192 новые плитки — 4/8, после 16384 — 8/16. ${hasApi ? 'Рейтинговая партия действует 24 часа. Свободные партии не входят в рейтинг.' : 'Рейтинг доступен внутри Telegram.'}`;
     storageNote.textContent = storageFailed
       ? 'Не удалось сохранить на устройстве. Не закрывай страницу до отправки результата.'
       : 'Партия сохраняется на этом устройстве. Вернись в 2048, чтобы продолжить.';
@@ -232,6 +235,7 @@ export function mount2048(host: GameHost): GameAdapter {
       state = decodeState2048(updated.state);
       pending = [];
       finished = updated.status === 'verified';
+      if (finished) pollUntil = Date.now() + 15 * 60000;
       failed = false;
       save();
       status.textContent = finished
@@ -316,7 +320,7 @@ export function mount2048(host: GameHost): GameAdapter {
     if (raw) {
       const snapshot = object(JSON.parse(raw));
       run = snapshot.run === null ? null : decodeRun2048(snapshot.run);
-      if (run && run.ruleset !== RULESET_2048)
+      if (run && !RULESETS_2048.includes(run.ruleset as Ruleset2048))
         throw new Error('Сохранение использует старую версию правил');
       if (
         !Array.isArray(snapshot.pending) ||
@@ -343,6 +347,11 @@ export function mount2048(host: GameHost): GameAdapter {
     status.textContent = 'Не удалось восстановить сохранение. Начата свободная партия.';
   }
   render();
+  // Keep delivery retries moving while the completed game's screen is open.
+  const deliveryTimer = window.setInterval(() => {
+    if (!disposed && !busy && run?.status === 'verified' && Date.now() < pollUntil)
+      void api.get2048(run.id).catch(() => {});
+  }, 30000);
   return {
     pause() {
       paused = true;
@@ -353,6 +362,7 @@ export function mount2048(host: GameHost): GameAdapter {
       render();
     },
     dispose() {
+      clearInterval(deliveryTimer);
       save();
       disposed = true;
       window.removeEventListener('keydown', keydown);

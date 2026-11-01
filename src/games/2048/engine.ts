@@ -1,9 +1,13 @@
 export const DIRECTIONS = ['left', 'right', 'up', 'down'] as const;
 export type Direction = (typeof DIRECTIONS)[number];
-export const RULESET_2048 = '2048-v1';
-export const MAX_2048_MOVES = 20000;
+export const LEGACY_2048_RULESET = '2048-v1';
+export const RULESET_2048 = '2048-v2';
+export const RULESETS_2048 = [LEGACY_2048_RULESET, RULESET_2048] as const;
+export type Ruleset2048 = (typeof RULESETS_2048)[number];
+export const MAX_2048_TILE = 2 ** 52;
 export const MAX_2048_CHUNK = 128;
 export interface State2048 {
+  version: 1 | 2;
   board: number[];
   rng: number;
   score: number;
@@ -18,13 +22,18 @@ function random(state: State2048): number {
   state.rng = x >>> 0;
   return state.rng / 0x100000000;
 }
+export function minimum2048Tile(state: State2048): number {
+  return state.version === 1 ? 2 : Math.max(2, Math.max(...state.board) / 2048);
+}
 function spawn(state: State2048): void {
   const empty = state.board.flatMap((value, i) => (value === 0 ? [i] : []));
   const index = empty[Math.floor(random(state) * empty.length)];
-  if (index !== undefined) state.board[index] = random(state) < 0.9 ? 2 : 4;
+  const minimum = minimum2048Tile(state);
+  if (index !== undefined) state.board[index] = minimum * (random(state) < 0.9 ? 1 : 2);
 }
-export function create2048(seed: number): State2048 {
+export function create2048(seed: number, ruleset: Ruleset2048 = RULESET_2048): State2048 {
   const state: State2048 = {
+    version: ruleset === LEGACY_2048_RULESET ? 1 : 2,
     board: Array<number>(16).fill(0),
     rng: seed >>> 0,
     score: 0,
@@ -68,10 +77,20 @@ export function move2048(state: State2048, direction: Direction): boolean {
     });
   }
   if (next.every((value, i) => value === state.board[i])) return false;
+  // Preserve an exact final result at the numeric representation boundary.
+  // Ordinary games have no move-count limit.
+  if (
+    !Number.isSafeInteger(state.score + gained) ||
+    state.moves >= Number.MAX_SAFE_INTEGER - 1 ||
+    next.some((value) => value > MAX_2048_TILE)
+  ) {
+    state.status = 'over';
+    return true;
+  }
   state.board = next;
   state.score += gained;
   state.moves++;
   spawn(state);
-  if (!canMove2048(state.board) || state.moves >= MAX_2048_MOVES) state.status = 'over';
+  if (!canMove2048(state.board)) state.status = 'over';
   return true;
 }

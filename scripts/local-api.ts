@@ -2,11 +2,13 @@ import { mkdirSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { LEGACY_2048_RULESET } from '../src/games/2048/engine.ts';
 import { Service2048 } from '../src/server/domain/2048.ts';
 import { ArcadeService } from '../src/server/domain/arcade.ts';
 import { GroupService } from '../src/server/domain/groups.ts';
 import { MaintenanceService } from '../src/server/domain/maintenance.ts';
 import { MinesweeperService } from '../src/server/domain/minesweeper.ts';
+import { SnakeService } from '../src/server/domain/snake.ts';
 import type { TelegramGateway } from '../src/server/domain/telegram.ts';
 import {
   DDL_2048,
@@ -15,12 +17,18 @@ import {
 } from '../src/server/platform/2048-ddl.ts';
 import { MANUAL_RESULTS_DDL } from '../src/server/platform/manual-results-ddl.ts';
 import { MINESWEEPER_DDL } from '../src/server/platform/minesweeper-ddl.ts';
+import {
+  SNAKE_DDL,
+  SNAKE_SOCIAL_COLUMNS,
+  SNAKE_SOCIAL_INDEXES,
+} from '../src/server/platform/snake-ddl.ts';
 import { RUN_SOCIAL_COLUMNS, SOCIAL_DDL } from '../src/server/platform/social-ddl.ts';
 import { Sql2048Repository } from '../src/server/platform/sql-2048.ts';
 import { SqlMineRepository } from '../src/server/platform/sql-minesweeper.ts';
 import { SqlArcadeRepository, type SqlDatabase } from '../src/server/platform/sql-repository.ts';
+import { SqlSnakeRepository } from '../src/server/platform/sql-snake.ts';
 import { SqlSocialRepository } from '../src/server/platform/sql-social-repository.ts';
-import { AppError } from '../src/shared/errors.ts';
+import { AppError, object } from '../src/shared/errors.ts';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS runs (
@@ -45,6 +53,12 @@ export function localRepository(file = ':memory:') {
   database.exec(SOCIAL_DDL);
   database.exec(MANUAL_RESULTS_DDL);
   database.exec(MINESWEEPER_DDL);
+  database.exec(SNAKE_DDL);
+  const snakeColumns = database.prepare('PRAGMA table_info(snake_runs)').all();
+  for (const [name, definition] of Object.entries(SNAKE_SOCIAL_COLUMNS))
+    if (!snakeColumns.some((column) => column.name === name))
+      database.exec(`ALTER TABLE snake_runs ADD COLUMN ${name} ${definition}`);
+  database.exec(SNAKE_SOCIAL_INDEXES);
   database.exec(DDL_2048);
   const puzzleColumns = database.prepare('PRAGMA table_info(puzzle2048_runs)').all();
   for (const [name, definition] of Object.entries(SOCIAL_2048_COLUMNS))
@@ -99,6 +113,7 @@ export function createLocalApi(file: string) {
   const social = new SqlSocialRepository(local.db, local.repository);
   const mineRepository = new SqlMineRepository(local.db);
   const puzzle2048Repository = new Sql2048Repository(local.db);
+  const snakeRepository = new SqlSnakeRepository(local.db);
   const groups = new GroupService(social, telegram, () => Date.now());
   const maintenance = new MaintenanceService(
     social,
@@ -108,6 +123,7 @@ export function createLocalApi(file: string) {
     () => Date.now(),
     mineRepository,
     puzzle2048Repository,
+    snakeRepository,
   );
   const ready = (async () => {
     await social.upsertGroup({
@@ -124,6 +140,10 @@ export function createLocalApi(file: string) {
     groups,
   );
   const player = { id: 1, name: 'Локальный игрок' };
+  const snake = new SnakeService(snakeRepository, {
+    now: () => Date.now(),
+    seed: () => Math.floor(Math.random() * 0x100000000),
+  });
   const puzzle2048 = new Service2048(puzzle2048Repository, {
     now: () => Date.now(),
     seed: () => Math.floor(Math.random() * 0x100000000),
@@ -131,6 +151,13 @@ export function createLocalApi(file: string) {
   const minesweeper = new MinesweeperService(mineRepository, {
     now: () => Date.now(),
   });
+  const flushNotifications = async () => {
+    try {
+      await maintenance.sweep(3);
+    } catch {
+      /* Delivery is retried by subsequent activity. */
+    }
+  };
   return {
     close: local.close,
     async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -156,11 +183,43 @@ export function createLocalApi(file: string) {
         const method = req.url?.split('?')[0]?.split('/').pop();
         let result: unknown;
         switch (method) {
+          case 'createSnakeRun':
+            result = await snake.create(player, input);
+            await flushNotifications();
+            break;
+          case 'getSnakeRun':
+            result = await snake.get(player, input);
+            await flushNotifications();
+            break;
+          case 'submitSnakeReplay':
+            {
+              const outcome = await snake.submit(player, input);
+              result = outcome;
+              if (outcome.status === 'verified') {
+                try {
+                  const run = await snakeRepository.get(outcome.id);
+                  if (run) await maintenance.snakeResult(run);
+                } catch {
+                  /* Retry notification generation independently from saving results. */
+                }
+              }
+              await flushNotifications();
+            }
+            break;
+          case 'getSnakeLeaderboard':
+            result = await snake.leaderboard(player, input);
+            await flushNotifications();
+            break;
           case 'create2048Run':
-            result = await puzzle2048.create(player, input);
+            result = await puzzle2048.create(player, {
+              ...object(input),
+              ruleset: object(input).ruleset ?? LEGACY_2048_RULESET,
+            });
+            await flushNotifications();
             break;
           case 'get2048Run':
             result = await puzzle2048.get(player, input);
+            await flushNotifications();
             break;
           case 'submit2048Moves':
             {
@@ -170,15 +229,19 @@ export function createLocalApi(file: string) {
                 try {
                   const run = await puzzle2048Repository.get(outcome.id);
                   if (run) await maintenance.result2048(run);
-                  await maintenance.sweep(3);
                 } catch {
                   // Notification delivery is retried independently from saving the result.
                 }
               }
+              await flushNotifications();
             }
             break;
           case 'get2048Leaderboard':
-            result = await puzzle2048.leaderboard(player, input);
+            result = await puzzle2048.leaderboard(player, {
+              ...object(input),
+              ruleset: object(input).ruleset ?? LEGACY_2048_RULESET,
+            });
+            await flushNotifications();
             break;
           case 'submitMineResult':
             {
@@ -206,6 +269,7 @@ export function createLocalApi(file: string) {
             result = service.catalog();
             break;
           case 'getProfile':
+            await flushNotifications();
             result = player;
             break;
           case 'createRun':

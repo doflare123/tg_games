@@ -2,6 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { localRepository } from '../scripts/local-api.ts';
 import { DIRECTIONS, type Direction, move2048 } from '../src/games/2048/engine.ts';
 import { type MineSize, SIZES } from '../src/games/minesweeper/engine.ts';
+import {
+  createSnake,
+  SNAKE_SIZES,
+  SNAKE_STEP_MS,
+  type SnakeDirection,
+  stepSnake,
+} from '../src/games/snake/engine.ts';
 import { createTetris } from '../src/games/tetris/engine.ts';
 import type { TetrisMode } from '../src/games/tetris/types.ts';
 import { Service2048 } from '../src/server/domain/2048.ts';
@@ -12,12 +19,15 @@ import { MaintenanceService } from '../src/server/domain/maintenance.ts';
 import { decodeManualResult } from '../src/server/domain/manual-result.ts';
 import { MinesweeperService } from '../src/server/domain/minesweeper.ts';
 import type { StoredRun } from '../src/server/domain/repository.ts';
+import { SnakeService } from '../src/server/domain/snake.ts';
 import type { SendMessage, TelegramGateway } from '../src/server/domain/telegram.ts';
 import { Sql2048Repository } from '../src/server/platform/sql-2048.ts';
 import { SqlManualResultRepository } from '../src/server/platform/sql-manual-results.ts';
 import { SqlMineRepository } from '../src/server/platform/sql-minesweeper.ts';
+import { SqlSnakeRepository } from '../src/server/platform/sql-snake.ts';
 import { SqlSocialRepository } from '../src/server/platform/sql-social-repository.ts';
 import { AppError } from '../src/shared/errors.ts';
+import { parseLaunch } from '../src/shared/launch.ts';
 
 const handles: ReturnType<typeof localRepository>[] = [];
 afterEach(() => {
@@ -63,6 +73,10 @@ async function setup() {
   const minesweeper = new MinesweeperService(mineRepository, { now: () => now });
   const puzzleRepository = new Sql2048Repository(local.db);
   const puzzle = new Service2048(puzzleRepository, { now: () => now, seed: () => 123 });
+  const snakeRepository = new SqlSnakeRepository(local.db);
+  let snakeSeed = 0;
+  while (createSnake(12, snakeSeed).food !== 79) snakeSeed++;
+  const snake = new SnakeService(snakeRepository, { now: () => now, seed: () => snakeSeed });
   const maintenance = new MaintenanceService(
     repository,
     local.repository,
@@ -71,6 +85,7 @@ async function setup() {
     () => now,
     mineRepository,
     puzzleRepository,
+    snakeRepository,
   );
   const bot = new GameBotService(repository, groups, telegram, () => now, 'https://arcade.test/');
   async function verified(
@@ -121,6 +136,8 @@ async function setup() {
     minesweeper,
     puzzleRepository,
     puzzle,
+    snakeRepository,
+    snake,
     maintenance,
     bot,
     telegram,
@@ -355,6 +372,54 @@ async function puzzleResult(
 }
 
 describe('2048 record announcements', () => {
+  it('recovers a job that expired before it was enqueued, sends it once, and leaves normal expiry alone', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const run = await puzzleResult(s, 'broken-deadline', 1, 5000);
+    await s.maintenance.result2048(run);
+    const jobId = `record:${run.id}:-100`;
+    await s.local.db.run(
+      "UPDATE social_jobs SET status='expired',due_at=:due,expires_at=:expires WHERE id=:id",
+      {
+        ':id': jobId,
+        ':due': s.now() + 20 * 60000,
+        ':expires': run.verifiedAt + 300000,
+      },
+    );
+    s.advance(20 * 60000);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(
+      await s.local.db.get('SELECT status FROM social_jobs WHERE id=:id', { ':id': jobId }),
+    ).toEqual({ status: 'done' });
+    await s.local.db.run(
+      "UPDATE social_jobs SET status='expired',due_at=:due,expires_at=:expires WHERE id=:id",
+      { ':id': jobId, ':due': s.now() - 5000, ':expires': s.now() - 1000 },
+    );
+    expect(await s.repository.recover2048Expired(s.now())).toBe(0);
+  });
+  it('defers a 2048 record during another game’s cooldown and sends after five minutes', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.mineResult(await mineResult(s, 'cooldown-before-puzzle', 1, 10000));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    const run = await puzzleResult(s, 'deferred-record', 1, 5000);
+    await s.maintenance.result2048(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(
+      await s.local.db.get('SELECT status,error FROM social_jobs WHERE id=:id', {
+        ':id': `record:${run.id}:-100`,
+      }),
+    ).toEqual({ status: 'pending', error: 'Group cooldown' });
+    s.advance(300001);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(2);
+    expect(s.sent[1]?.text).toContain('2048 · 5000 очков');
+  });
   it('keeps legacy results silent while opting an existing active game into new announcements on completion', async () => {
     const s = await setup();
     const created = await s.puzzle.create(s.player, { requestId: 'puzzle_legacy_1234567' });
@@ -401,8 +466,8 @@ describe('2048 record announcements', () => {
     s.telegram.member = member;
     await s.maintenance.result2048(winner);
     await s.maintenance.sweep();
-    // The five-minute delivery window has passed during the outage.
-    expect(s.sent).toHaveLength(0);
+    // Delayed generation gets a valid delivery window after the outage.
+    expect(s.sent).toHaveLength(1);
     expect((await s.puzzleRepository.get(winner.id))?.socialProcessed).toBe(true);
   });
   it('recovers a verified result from the replay service and announces it once with a 2048 link', async () => {
@@ -555,6 +620,274 @@ describe('2048 record announcements', () => {
     await s.groups.configure(s.player, { groupId: -200, enabled: true });
     await s.maintenance.sweep();
     expect(s.sent).toHaveLength(0);
+  });
+});
+
+async function snakeResult(
+  s: Awaited<ReturnType<typeof setup>>,
+  id: string,
+  playerId: number,
+  score: number,
+  size = 16,
+) {
+  const created = await s.snake.create(
+    { id: playerId, name: `P${playerId}` },
+    { requestId: `snake_fixture_${id}`, size },
+  );
+  const original = await s.snakeRepository.get(created.id);
+  if (!original) throw new Error('Missing snake fixture');
+  await s.snakeRepository.save(
+    {
+      ...original,
+      revision: 1,
+      status: 'verified',
+      state: { ...original.state, score, status: 'over' },
+      verifiedAt: s.now(),
+    },
+    0,
+  );
+  const stored = await s.snakeRepository.get(created.id);
+  if (!stored) throw new Error('Missing snake result');
+  return stored;
+}
+describe('Snake record announcements', () => {
+  it.each(SNAKE_SIZES)('announces size %i once and links to the same field', async (size) => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const run = await snakeResult(s, 'first', 1, 100, size);
+    await s.maintenance.snakeResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain(`Змейка · ${size}×${size} · 100 очков`);
+    expect(s.sent[0]?.text).toContain('Первый рекорд группы');
+    expect(s.sent[0]?.reply_markup?.inline_keyboard[0]?.[0]).toEqual({
+      text: '🎮 Побить рекорд',
+      url: `https://t.me/arcade_bot?startapp=game_snake_${size}`,
+    });
+    expect(parseLaunch(`game_snake_${size}`)).toEqual({
+      view: 'game',
+      game: 'snake',
+      snakeSize: size,
+    });
+    await s.maintenance.snakeResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(await s.snakeRepository.pendingResults(3)).toEqual([]);
+  });
+  it('recovers an actual server-verified replay without announcing an unfinished game', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const created = await s.snake.create(s.player, {
+      requestId: 'snake_real_replay_12345',
+      size: 12,
+    });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    const state = structuredClone(created.state);
+    const directions: SnakeDirection[] = [];
+    while (state.status === 'playing') {
+      directions.push('right');
+      stepSnake(state);
+    }
+    s.advance(directions.length * SNAKE_STEP_MS);
+    const input = { runId: created.id, revision: 0, directions };
+    await s.snake.submit(s.player, input);
+    const stored = await s.snakeRepository.get(created.id);
+    expect(stored).toMatchObject({ verifiedAt: s.now(), verifiedOrder: 1, socialProcessed: false });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('10 очков');
+    await s.snake.submit(s.player, input);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+  });
+  it('compares only group members, announces an overtake and a leader improvement', async () => {
+    const s = await setup();
+    await snakeResult(s, 'rival', 2, 100);
+    await snakeResult(s, 'outsider', 3, 1000);
+    s.members.set(3, { active: false, admin: false });
+    await s.repository.observeMember({
+      chatId: -100,
+      userId: 3,
+      active: false,
+      updatedAt: s.now(),
+    });
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const run = await snakeResult(s, 'winner', 1, 200);
+    await s.maintenance.snakeResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('Обошёл(ла) P2: больше на 100 очков');
+    expect((await s.snake.leaderboard(s.player, { size: 16, period: 'all' })).me?.rank).toBe(2);
+    s.advance(300001);
+    await s.maintenance.snakeResult(await snakeResult(s, 'improved', 1, 300));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(2);
+    expect(s.sent[1]?.text).toContain('Улучшен рекорд группы: больше на 100 очков');
+  });
+  it('ignores zero scores, same-place personal improvements, ties and results before enabling', async () => {
+    const s = await setup();
+    await snakeResult(s, 'leader', 2, 1000);
+    await snakeResult(s, 'second', 1, 100);
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    await s.maintenance.snakeResult(await snakeResult(s, 'personal', 1, 200));
+    await s.maintenance.snakeResult(await snakeResult(s, 'tie', 2, 1000));
+    await s.maintenance.snakeResult(await snakeResult(s, 'zero', 3, 0, 12));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+  });
+  it('shares the cross-game cooldown and delivers a deferred record after five minutes', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.mineResult(await mineResult(s, 'before-snake', 1, 10000));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    const run = await snakeResult(s, 'cooldown', 1, 100);
+    await s.maintenance.snakeResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(
+      await s.local.db.get('SELECT status,error FROM social_jobs WHERE id=:id', {
+        ':id': `record:${run.id}:-100`,
+      }),
+    ).toEqual({ status: 'pending', error: 'Group cooldown' });
+    s.advance(300001);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(2);
+    expect(s.sent[1]?.text).toContain('Змейка');
+  });
+  it('orders snapshots by completion and suppresses superseded records before sending', async () => {
+    const s = await setup();
+    const early = await s.snake.create(s.player, { requestId: 'snake_early_12345678', size: 16 });
+    await snakeResult(s, 'later-start', 2, 100);
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const original = await s.snakeRepository.get(early.id);
+    if (!original) throw new Error('Missing fixture');
+    await s.snakeRepository.save(
+      {
+        ...original,
+        revision: 1,
+        status: 'verified',
+        state: { ...original.state, score: 200, status: 'over' },
+        verifiedAt: s.now(),
+      },
+      0,
+    );
+    const a = await s.snakeRepository.get(early.id);
+    if (!a) throw new Error('Missing result');
+    expect(a.verifiedOrder).toBe(2);
+    const before = await s.snakeRepository.leaderboard(s.player, 16, 'all', 0, {
+      groupId: -100,
+      maxResultOrder: 1,
+    });
+    expect(before.me).toBeNull();
+    expect(before.entries[0]?.playerId).toBe(2);
+    await s.maintenance.snakeResult(a);
+    await s.maintenance.snakeResult(await snakeResult(s, 'new-winner', 3, 300));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('P3');
+  });
+  it('retries Telegram errors and suppresses delivery after a player leaves or notifications are disabled', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.snakeResult(await snakeResult(s, 'retry', 1, 100));
+    const send = s.telegram.send;
+    s.telegram.send = vi
+      .fn()
+      .mockRejectedValueOnce({ code: 429, parameters: { retry_after: 2 } })
+      .mockImplementation(send);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    s.advance(2100);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    s.advance(300001);
+    await s.maintenance.snakeResult(await snakeResult(s, 'left', 1, 200));
+    s.members.set(1, { active: false, admin: false });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    s.members.set(1, { active: true, admin: true });
+    await s.maintenance.snakeResult(await snakeResult(s, 'off', 1, 300));
+    await s.groups.configure(s.player, { groupId: -100, enabled: false });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+  });
+  it('keeps pre-migration records processed and opts existing active games in at completion', async () => {
+    const s = await setup();
+    const created = await s.snake.create(s.player, {
+      requestId: 'snake_migration_12345',
+      size: 16,
+    });
+    await s.local.db.run(
+      `INSERT INTO snake_runs (id,player_id,player_name,ruleset,size,revision,state_json,status,score,created_at,expires_at,last_submission)
+      SELECT 'snake-legacy',2,'P2',ruleset,size,revision,state_json,'verified',0,created_at,expires_at,last_submission FROM snake_runs WHERE id=:id`,
+      { ':id': created.id },
+    );
+    expect((await s.snakeRepository.get('snake-legacy'))?.socialProcessed).toBe(true);
+    expect(await s.snakeRepository.pendingResults(3)).toEqual([]);
+    await s.local.db.run('UPDATE snake_runs SET social_processed=1 WHERE id=:id', {
+      ':id': created.id,
+    });
+    const state = structuredClone(created.state);
+    const directions: SnakeDirection[] = [];
+    while (state.status === 'playing') {
+      directions.push('right');
+      stepSnake(state);
+    }
+    s.advance(directions.length * SNAKE_STEP_MS);
+    await s.snake.submit(s.player, { runId: created.id, revision: 0, directions });
+    expect((await s.snakeRepository.get(created.id))?.socialProcessed).toBe(false);
+    expect((await s.snakeRepository.pendingResults(3)).map((r) => r.id)).toEqual([created.id]);
+  });
+  it('discovers snake-only players in new groups without broadcasting old records', async () => {
+    const s = await setup();
+    await snakeResult(s, 'history', 2, 100);
+    await s.repository.upsertGroup({
+      id: -200,
+      title: 'Новая группа',
+      active: true,
+      botAdmin: true,
+    });
+    expect(await s.repository.membersToRefresh(-200, s.now() - 1000, 25)).toContain(2);
+    await s.groups.synchronize(-200);
+    expect(
+      (await s.snakeRepository.leaderboard(s.player, 16, 'all', 0, { groupId: -200 })).entries[0]
+        ?.playerId,
+    ).toBe(2);
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -200, enabled: true });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+  });
+  it('defers incomplete membership verification and excludes records below the group top ten', async () => {
+    const s = await setup();
+    for (let id = 2; id <= 12; id++) {
+      s.members.set(id, { active: true, admin: false });
+      await snakeResult(s, `rival-${id}`, id, id * 10);
+    }
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.snakeResult(await snakeResult(s, 'outside-top', 1, 10));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    const winner = await snakeResult(s, 'after-outage', 1, 500);
+    s.advance(16 * 60000);
+    const member = s.telegram.member;
+    s.telegram.member = async (chat, id) => {
+      if (id === 2) throw new Error('Telegram outage');
+      return member(chat, id);
+    };
+    await expect(s.maintenance.snakeResult(winner)).rejects.toMatchObject({ code: 'UNAVAILABLE' });
+    expect((await s.snakeRepository.get(winner.id))?.socialProcessed).toBe(false);
+    s.telegram.member = member;
+    for (let i = 0; i < 5; i++) await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
   });
 });
 

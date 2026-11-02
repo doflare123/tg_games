@@ -1,10 +1,78 @@
 import { index, integer, table, text } from 'sdk/db';
-// Triggers are installed by scripts/moderate-ranking.ts during explicit moderation.
+export const adminMeta = table('admin_meta', {
+  id: text('id').primaryKey(),
+  installedAt: integer('installed_at').notNull(),
+});
+export const adminVisits = table(
+  'admin_visits',
+  {
+    id: text('id').primaryKey(),
+    playerId: integer('player_id').notNull(),
+    playerName: text('player_name').notNull(),
+    day: integer('day').notNull(),
+    firstSeen: integer('first_seen').notNull(),
+    lastSeen: integer('last_seen').notNull(),
+  },
+  (t) => ({
+    day: index('admin_visits_day').on(t.day, t.playerId),
+    player: index('admin_visits_player').on(t.playerId, t.firstSeen),
+  }),
+);
+export const adminGroupEvents = table(
+  'admin_group_events',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    groupId: integer('group_id').notNull(),
+    kind: text('kind').notNull(),
+    at: integer('at').notNull(),
+  },
+  (t) => ({ at: index('admin_events_at').on(t.at, t.kind) }),
+);
+export const adminAudit = table(
+  'admin_audit',
+  {
+    id: text('id').primaryKey(),
+    actorId: integer('actor_id').notNull(),
+    action: text('action').notNull(),
+    target: text('target').notNull(),
+    reason: text('reason').notNull(),
+    createdAt: integer('created_at').notNull(),
+    beforeJson: text('before_json').notNull(),
+    afterJson: text('after_json').notNull(),
+  },
+  (t) => ({ created: index('admin_audit_created').on(t.createdAt) }),
+);
+// Triggers are installed by explicit admin:install or CLI ranking moderation.
 export const rankingBlocks = table('ranking_blocks', {
   playerId: integer('player_id').primaryKey(),
   reason: text('reason').notNull(),
   createdAt: integer('created_at').notNull(),
 });
+export const flappyRuns = table(
+  'flappy_runs',
+  {
+    id: text('id').primaryKey(),
+    playerId: integer('player_id').notNull(),
+    playerName: text('player_name').notNull(),
+    ruleset: text('ruleset').notNull(),
+    revision: integer('revision').notNull(),
+    stateJson: text('state_json').notNull(),
+    status: text('status').notNull(),
+    score: integer('score').notNull(),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    lastSubmission: text('last_submission'),
+    verifiedAt: integer('verified_at').notNull().default(0),
+    verifiedOrder: integer('verified_order').notNull().default(0),
+    socialProcessed: integer('social_processed').notNull().default(1),
+  },
+  (t) => ({
+    leaderboard: index('flappy_leaderboard').on(t.ruleset, t.status, t.score, t.createdAt),
+    recent: index('flappy_recent').on(t.playerId, t.createdAt),
+    verifiedOrder: index('flappy_verified_order').on(t.verifiedOrder),
+    pendingSocial: index('flappy_pending_social').on(t.status, t.socialProcessed, t.verifiedOrder),
+  }),
+);
 export const snakeRuns = table(
   'snake_runs',
   {

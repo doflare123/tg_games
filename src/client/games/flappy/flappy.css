@@ -1,0 +1,171 @@
+.flappy-game {
+  width: 100%;
+  max-width: 600px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+.flappy-toolbar,
+.flappy-actions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+.flappy-toolbar .button,
+.flappy-actions .button {
+  min-height: 40px;
+  padding: 8px 13px;
+}
+.flappy-toolbar .select {
+  width: 100%;
+  min-width: 0;
+}
+.flappy-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  max-width: 500px;
+  align-items: center;
+}
+.flappy-audio {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.flappy-audio .flappy-mute {
+  flex-shrink: 0;
+  min-width: 36px;
+  padding: 4px;
+  font-size: 18px;
+}
+.flappy-volume {
+  flex: 1;
+  width: 100%;
+  min-width: 20px;
+  height: 36px;
+  margin: 0;
+  accent-color: var(--green);
+  cursor: pointer;
+}
+.flappy-volume-value {
+  width: 4ch;
+  flex-shrink: 0;
+  text-align: right;
+  color: var(--green);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.flappy-field {
+  position: relative;
+  width: min(100%, 420px, calc((100svh - 240px) * 0.5625));
+  min-width: 180px;
+  aspect-ratio: 288 / 512;
+  background: #4ec0ca;
+  box-shadow:
+    0 0 0 3px #543847,
+    0 12px 32px #0004;
+  isolation: isolate;
+}
+.flappy-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.flappy-pixel-button {
+  position: absolute;
+  top: 61%;
+  left: 50%;
+  transform: translateX(-50%);
+  color: white;
+  background: #e76635;
+  border: 3px solid #543847;
+  box-shadow:
+    inset 0 3px #ffb678,
+    inset 0 -3px #a93c23,
+    0 3px #ded895;
+  font: bold 16px monospace;
+  letter-spacing: 2px;
+  min-width: 112px;
+  min-height: 44px;
+  text-shadow: 2px 2px #8a3928;
+}
+.flappy-mode {
+  margin: 0;
+  font-size: 12px;
+  color: var(--green);
+  min-height: 15px;
+}
+.flappy-message {
+  margin: 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 440px;
+}
+.flappy-game .control-hint {
+  margin: 0;
+  text-align: center;
+  font-size: 12px;
+}
+.flappy-preview {
+  background: #4ec0ca url("/assets/flappy/background-day.png") center 65% / cover;
+  overflow: hidden;
+}
+.flappy-preview::before {
+  content: "";
+  position: absolute;
+  width: 52px;
+  height: 180px;
+  right: 20%;
+  bottom: -15px;
+  background: url("/assets/flappy/pipe-green.png") top / 52px 320px;
+  image-rendering: pixelated;
+}
+.flappy-preview::after {
+  content: "";
+  position: absolute;
+  width: 68px;
+  height: 48px;
+  left: 25%;
+  top: 38%;
+  background: url("/assets/flappy/yellowbird-midflap.png") center / contain no-repeat;
+  image-rendering: pixelated;
+}
+@media (max-width: 600px) {
+  .flappy-game {
+    gap: 10px;
+  }
+  .flappy-field {
+    width: min(100%, 420px, calc((100svh - 230px) * 0.5625));
+  }
+  .flappy-toolbar {
+    gap: 6px;
+  }
+  .flappy-toolbar .select {
+    width: 100%;
+    min-width: 0;
+    padding: 8px;
+    font-size: 11px;
+  }
+  .flappy-toolbar .button {
+    padding: 6px 8px;
+    font-size: 11px;
+  }
+  .flappy-audio {
+    gap: 4px;
+  }
+  .flappy-audio .flappy-mute {
+    min-width: 32px;
+    padding: 4px;
+    font-size: 16px;
+  }
+}

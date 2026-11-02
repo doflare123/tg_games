@@ -3,6 +3,7 @@ import type { GroupView } from '../../shared/groups.ts';
 import { api, hasApi } from '../platform/api.ts';
 import { mount2048Leaderboard } from './2048-leaderboard.ts';
 import { button, element, errorMessage, formatTime } from './dom.ts';
+import { mountFlappyLeaderboard } from './flappy-leaderboard.ts';
 import { mountMineLeaderboard } from './mine-leaderboard.ts';
 import { mountSnakeLeaderboard } from './snake-leaderboard.ts';
 
@@ -16,6 +17,7 @@ export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): ()
     ['minesweeper', 'Сапёр'],
     ['2048', '2048'],
     ['snake', 'Змейка'],
+    ['flappy', 'Flappy Bird'],
   ]) {
     const option = element('option', '', label);
     option.value = value ?? 'tetris';
@@ -25,21 +27,31 @@ export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): ()
   filters.append(picker);
   const content = element('div');
   host.replaceChildren(filters, content);
-  let dispose = mountTetrisLeaderboard(content, initialGroupId);
+  let selectedGroupId = initialGroupId;
+  const onGroupChange = (id: number | undefined) => {
+    selectedGroupId = id;
+  };
+  let dispose = mountTetrisLeaderboard(content, selectedGroupId, onGroupChange);
   picker.addEventListener('change', () => {
     dispose();
     dispose =
-      picker.value === 'snake'
-        ? mountSnakeLeaderboard(content)
-        : picker.value === '2048'
-          ? mount2048Leaderboard(content)
-          : picker.value === 'minesweeper'
-            ? mountMineLeaderboard(content)
-            : mountTetrisLeaderboard(content, initialGroupId);
+      picker.value === 'flappy'
+        ? mountFlappyLeaderboard(content, selectedGroupId, onGroupChange)
+        : picker.value === 'snake'
+          ? mountSnakeLeaderboard(content, selectedGroupId, onGroupChange)
+          : picker.value === '2048'
+            ? mount2048Leaderboard(content, selectedGroupId, onGroupChange)
+            : picker.value === 'minesweeper'
+              ? mountMineLeaderboard(content, selectedGroupId, onGroupChange)
+              : mountTetrisLeaderboard(content, selectedGroupId, onGroupChange);
   });
   return () => dispose();
 }
-function mountTetrisLeaderboard(host: HTMLElement, initialGroupId?: number): () => void {
+function mountTetrisLeaderboard(
+  host: HTMLElement,
+  initialGroupId?: number,
+  onGroupChange?: (id: number | undefined) => void,
+): () => void {
   let disposed = false;
   let request = 0;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -232,6 +244,7 @@ function mountTetrisLeaderboard(host: HTMLElement, initialGroupId?: number): () 
         );
     }
   }
+  scope.addEventListener('change', () => onGroupChange?.(selected()));
   for (const control of [mode, period, scope])
     control.addEventListener('change', () => {
       status.textContent = '';

@@ -7,7 +7,11 @@ function localApi(): Plugin {
     name: 'local-arcade-api',
     apply: 'serve',
     configureServer(server) {
-      const api = createLocalApi(resolve('.cache/arcade-dev.sqlite'));
+      const ownerPreview = process.env.TG_GAMES_DEV_OWNER === '1';
+      const api = createLocalApi(
+        resolve(ownerPreview ? '.cache/arcade-admin-dev.sqlite' : '.cache/arcade-dev.sqlite'),
+        ownerPreview,
+      );
       server.middlewares.use('/__dev/rpc', (req, res) => {
         void api.handle(req, res);
       });

@@ -8,6 +8,8 @@ import { launchUrl } from '../../shared/launch.ts';
 import { snakeSize } from '../../shared/snake.ts';
 import type { Repository2048, Stored2048 } from './2048.ts';
 import { record2048Notification } from './2048-record-notification.ts';
+import type { FlappyRepository, StoredFlappy } from './flappy.ts';
+import { flappyRecordNotification } from './flappy-record-notification.ts';
 import type { GroupService } from './groups.ts';
 import { mineRecordNotification } from './mine-record-notification.ts';
 import type { MineNotificationResult, MineRepository } from './minesweeper.ts';
@@ -27,6 +29,7 @@ export class MaintenanceService {
     private readonly mines?: MineRepository,
     private readonly puzzle2048?: Repository2048,
     private readonly snake?: SnakeRepository,
+    private readonly flappy?: FlappyRepository,
   ) {}
   private async targetGroups(
     player: Player,
@@ -246,6 +249,53 @@ export class MaintenanceService {
     }
     await this.snake.processed(run.id);
   }
+  async flappyResult(run: StoredFlappy): Promise<void> {
+    if (!this.flappy || run.status !== 'verified' || run.socialProcessed) return;
+    const player = { id: run.playerId, name: run.playerName };
+    for (const group of await this.targetGroups(player, run.verifiedAt)) {
+      try {
+        await this.groups.access(player, group.id);
+      } catch (error) {
+        if (
+          error instanceof AppError &&
+          (error.code === 'UNAUTHORIZED' || error.code === 'NOT_FOUND')
+        )
+          continue;
+        throw error;
+      }
+      const sync = await this.groups.synchronize(group.id);
+      if (sync.state !== 'complete')
+        throw new AppError('UNAVAILABLE', 'Обновляется состав группы; объявление отложено');
+      const scope = { groupId: group.id, membershipCheckedSince: sync.checkedSince };
+      const before = await this.flappy.leaderboard(player, 'all', 0, {
+        ...scope,
+        maxResultOrder: run.verifiedOrder - 1,
+      });
+      const after = await this.flappy.leaderboard(player, 'all', 0, {
+        ...scope,
+        maxResultOrder: run.verifiedOrder,
+      });
+      const message = flappyRecordNotification(run, before, after);
+      if (message)
+        await this.repository.enqueue({
+          id: `record:${run.id}:${group.id}`,
+          payload: {
+            type: 'record',
+            game: 'flappy',
+            chatId: group.id,
+            playerId: run.playerId,
+            mode: 'classic',
+            runId: run.id,
+            rank: after.me?.rank ?? 1,
+            text: message,
+          },
+          dueAt: this.now(),
+          expiresAt: this.now() + 86400000,
+          attempts: 0,
+        });
+    }
+    await this.flappy.processed(run.id);
+  }
   async sweep(limit = 12): Promise<{ processed: number; deferred: number }> {
     await this.repository.recover2048Expired(this.now());
     let deferred = 0;
@@ -293,6 +343,17 @@ export class MaintenanceService {
         );
       }
     }
+    for (const run of (await this.flappy?.pendingResults(3)) ?? []) {
+      try {
+        await this.flappyResult(run);
+      } catch (error) {
+        deferred++;
+        console.warn(
+          'flappy_record_generation_deferred',
+          error instanceof Error ? error.message : 'unknown',
+        );
+      }
+    }
     let processed = 0;
     for (let i = 0; i < limit; i++) {
       const job = await this.repository.claim(this.now());
@@ -327,32 +388,36 @@ export class MaintenanceService {
         throw new AppError('UNAVAILABLE', 'Рейтинг 2048 недоступен');
       if (payload.game === 'snake' && !this.snake)
         throw new AppError('UNAVAILABLE', 'Рейтинг Змейки недоступен');
+      if (payload.game === 'flappy' && !this.flappy)
+        throw new AppError('UNAVAILABLE', 'Рейтинг Flappy Bird недоступен');
       const board =
-        payload.game === 'snake' && this.snake
-          ? await this.snake.leaderboard(player, snakeSize(Number(payload.mode)), 'all', 0, scope)
-          : payload.game === '2048' && this.puzzle2048
-            ? await this.puzzle2048.leaderboard(player, 'all', 0, {
-                ...scope,
-                ruleset:
-                  payload.mode === 'classic'
-                    ? LEGACY_2048_RULESET
-                    : oneOf(payload.mode, RULESETS_2048),
-              })
-            : payload.game === 'minesweeper' && this.mines
-              ? await this.mines.leaderboard(player, oneOf(payload.mode, SIZES), 'all', 0, scope)
-              : await this.arcade.leaderboard(
-                  { id: payload.playerId, name: 'Игрок' },
-                  oneOf(payload.mode, MODES),
-                  'all',
-                  0,
-                  scope,
-                );
+        payload.game === 'flappy' && this.flappy
+          ? await this.flappy.leaderboard(player, 'all', 0, scope)
+          : payload.game === 'snake' && this.snake
+            ? await this.snake.leaderboard(player, snakeSize(Number(payload.mode)), 'all', 0, scope)
+            : payload.game === '2048' && this.puzzle2048
+              ? await this.puzzle2048.leaderboard(player, 'all', 0, {
+                  ...scope,
+                  ruleset:
+                    payload.mode === 'classic'
+                      ? LEGACY_2048_RULESET
+                      : oneOf(payload.mode, RULESETS_2048),
+                })
+              : payload.game === 'minesweeper' && this.mines
+                ? await this.mines.leaderboard(player, oneOf(payload.mode, SIZES), 'all', 0, scope)
+                : await this.arcade.leaderboard(
+                    { id: payload.playerId, name: 'Игрок' },
+                    oneOf(payload.mode, MODES),
+                    'all',
+                    0,
+                    scope,
+                  );
       if (!board.me || board.me.rank !== payload.rank || board.me.runId !== payload.runId) {
         await this.repository.complete(job, 'suppressed', 'Superseded record');
         return;
       }
       if (!(await this.repository.reserveAnnouncement(payload.chatId, now, job.id))) {
-        if (payload.game === '2048' || payload.game === 'snake') {
+        if (payload.game === '2048' || payload.game === 'snake' || payload.game === 'flappy') {
           const updated = await this.repository.group(payload.chatId);
           await this.repository.retry(
             job,
@@ -376,13 +441,15 @@ export class MaintenanceService {
                 text: '🎮 Побить рекорд',
                 url: launchUrl(
                   me.username,
-                  payload.game === 'snake'
-                    ? `game_snake_${payload.mode}`
-                    : payload.game === '2048'
-                      ? 'game_2048'
-                      : payload.game === 'minesweeper'
-                        ? `game_minesweeper_${payload.mode}`
-                        : `game_tetris_${payload.mode}`,
+                  payload.game === 'flappy'
+                    ? 'game_flappy'
+                    : payload.game === 'snake'
+                      ? `game_snake_${payload.mode}`
+                      : payload.game === '2048'
+                        ? 'game_2048'
+                        : payload.game === 'minesweeper'
+                          ? `game_minesweeper_${payload.mode}`
+                          : `game_tetris_${payload.mode}`,
                   me.hasMainMiniApp ? 'startapp' : 'start',
                 ),
               },

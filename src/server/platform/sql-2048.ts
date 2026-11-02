@@ -1,7 +1,7 @@
 import { RULESET_2048 } from '../../games/2048/engine.ts';
 import { decodeBoard2048, decodeRun2048 } from '../../shared/2048.ts';
 import type { Period, Player } from '../../shared/contracts.ts';
-import { integer, object, text } from '../../shared/errors.ts';
+import { AppError, integer, object, text } from '../../shared/errors.ts';
 import type { BoardScope2048, Repository2048, Stored2048 } from '../domain/2048.ts';
 import type { SqlDatabase } from './sql-repository.ts';
 import { returnedRows } from './sql-write.ts';
@@ -12,6 +12,8 @@ export class Sql2048Repository implements Repository2048 {
     const value = await this.db.get('SELECT * FROM puzzle2048_runs WHERE id=:id', { ':id': id });
     if (value == null) return null;
     const r = object(value);
+    if (r.status === 'unranked')
+      throw new AppError('CONFLICT', 'Результат снят владельцем из рейтинга');
     return {
       ...decodeRun2048({
         id: r.id,

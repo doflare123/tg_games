@@ -1,4 +1,12 @@
-import { integer, object, text } from './errors.ts';
+import { integer, object, oneOf, text } from './errors.ts';
+export interface GroupLeaderboardState {
+  membershipSync?: 'complete' | 'pending' | 'failed';
+}
+export function decodeGroupLeaderboardState(value: unknown): GroupLeaderboardState {
+  return value === undefined
+    ? {}
+    : { membershipSync: oneOf(value, ['complete', 'pending', 'failed']) };
+}
 export interface GroupView {
   id: number;
   title: string;

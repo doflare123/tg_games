@@ -12,6 +12,8 @@ import { decodeState2048 } from '../../shared/2048.ts';
 import type { Period, Player } from '../../shared/contracts.ts';
 import { AppError, integer, object, oneOf, text } from '../../shared/errors.ts';
 import type { Clock } from './arcade.ts';
+import type { GroupService } from './groups.ts';
+import { leaderboardScope } from './leaderboard-scope.ts';
 
 export interface Stored2048 extends Run2048 {
   playerId: number;
@@ -49,6 +51,7 @@ export class Service2048 {
   constructor(
     private readonly repository: Repository2048,
     private readonly clock: Clock,
+    private readonly groups?: GroupService,
   ) {}
   async create(player: Player, input: unknown): Promise<Run2048> {
     const data = object(input);
@@ -129,11 +132,19 @@ export class Service2048 {
     const data = object(input);
     const period = oneOf(data.period, ['all', 'week']);
     const ruleset = data.ruleset === undefined ? RULESET_2048 : oneOf(data.ruleset, RULESETS_2048);
+    const { scope, state } = await leaderboardScope(player, data.groupId, this.groups);
     const date = new Date(this.clock.now());
     date.setUTCHours(0, 0, 0, 0);
     date.setUTCDate(date.getUTCDate() - ((date.getUTCDay() + 6) % 7));
-    return this.repository.leaderboard(player, period, period === 'all' ? 0 : date.getTime(), {
-      ruleset,
-    });
+    const board = await this.repository.leaderboard(
+      player,
+      period,
+      period === 'all' ? 0 : date.getTime(),
+      {
+        ...scope,
+        ruleset,
+      },
+    );
+    return { ...board, ...state };
   }
 }

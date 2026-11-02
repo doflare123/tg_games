@@ -11,10 +11,12 @@ const RANKED_TABLES = [
   ['minesweeper_runs', 'won'],
   ['runs', 'verified'],
   ['snake_runs', 'verified'],
+  ['flappy_runs', 'verified'],
   ['manual_results', null],
 ] as const;
 
-// Installed only by an explicit operator action, never by build/check or an endpoint.
+// Installed only by explicit operator action (CLI moderation or admin:install),
+// never by build/check or a public endpoint. Local dev uses its own SQLite.
 // SQLite enforces the block for deployed code, in-flight runs and manual corrections.
 export const RANKING_BLOCK_DDL = [
   `CREATE TABLE IF NOT EXISTS ranking_blocks (

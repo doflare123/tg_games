@@ -8,6 +8,7 @@ import {
 } from '../games/snake/engine.ts';
 import type { Period } from './contracts.ts';
 import { AppError, integer, object, oneOf, text } from './errors.ts';
+import { decodeGroupLeaderboardState, type GroupLeaderboardState } from './groups.ts';
 export function snakeSize(value: unknown): number {
   const size = integer(value, 12, 24);
   if (!(SNAKE_SIZES as readonly number[]).includes(size))
@@ -35,7 +36,7 @@ export interface SnakeEntry {
   score: number;
   runId: string;
 }
-export interface SnakeBoard {
+export interface SnakeBoard extends GroupLeaderboardState {
   size: number;
   period: Period;
   entries: SnakeEntry[];
@@ -90,6 +91,7 @@ export function decodeSnakeBoard(value: unknown): SnakeBoard {
   return {
     size: snakeSize(r.size),
     period: oneOf(r.period, ['all', 'week']),
+    ...decodeGroupLeaderboardState(r.membershipSync),
     entries: r.entries.map(entry),
     me: r.me === null ? null : entry(r.me),
   };

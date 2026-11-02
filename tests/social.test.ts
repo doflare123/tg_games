@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { localRepository } from '../scripts/local-api.ts';
 import { DIRECTIONS, type Direction, move2048 } from '../src/games/2048/engine.ts';
+import { stepFlappy } from '../src/games/flappy/engine.ts';
 import { type MineSize, SIZES } from '../src/games/minesweeper/engine.ts';
 import {
   createSnake,
@@ -14,6 +15,7 @@ import type { TetrisMode } from '../src/games/tetris/types.ts';
 import { Service2048 } from '../src/server/domain/2048.ts';
 import { ArcadeService } from '../src/server/domain/arcade.ts';
 import { type GAME_COMMANDS, GameBotService } from '../src/server/domain/bot.ts';
+import { FlappyService } from '../src/server/domain/flappy.ts';
 import { GroupService } from '../src/server/domain/groups.ts';
 import { MaintenanceService } from '../src/server/domain/maintenance.ts';
 import { decodeManualResult } from '../src/server/domain/manual-result.ts';
@@ -22,6 +24,7 @@ import type { StoredRun } from '../src/server/domain/repository.ts';
 import { SnakeService } from '../src/server/domain/snake.ts';
 import type { SendMessage, TelegramGateway } from '../src/server/domain/telegram.ts';
 import { Sql2048Repository } from '../src/server/platform/sql-2048.ts';
+import { SqlFlappyRepository } from '../src/server/platform/sql-flappy.ts';
 import { SqlManualResultRepository } from '../src/server/platform/sql-manual-results.ts';
 import { SqlMineRepository } from '../src/server/platform/sql-minesweeper.ts';
 import { SqlSnakeRepository } from '../src/server/platform/sql-snake.ts';
@@ -70,13 +73,19 @@ async function setup() {
   const groups = new GroupService(repository, telegram, () => now);
   const arcade = new ArcadeService(local.repository, { now: () => now, seed: () => 1 }, groups);
   const mineRepository = new SqlMineRepository(local.db);
-  const minesweeper = new MinesweeperService(mineRepository, { now: () => now });
+  const minesweeper = new MinesweeperService(mineRepository, { now: () => now }, groups);
   const puzzleRepository = new Sql2048Repository(local.db);
-  const puzzle = new Service2048(puzzleRepository, { now: () => now, seed: () => 123 });
+  const puzzle = new Service2048(puzzleRepository, { now: () => now, seed: () => 123 }, groups);
+  const flappyRepository = new SqlFlappyRepository(local.db);
+  const flappy = new FlappyService(flappyRepository, { now: () => now, seed: () => 123 }, groups);
   const snakeRepository = new SqlSnakeRepository(local.db);
   let snakeSeed = 0;
   while (createSnake(12, snakeSeed).food !== 79) snakeSeed++;
-  const snake = new SnakeService(snakeRepository, { now: () => now, seed: () => snakeSeed });
+  const snake = new SnakeService(
+    snakeRepository,
+    { now: () => now, seed: () => snakeSeed },
+    groups,
+  );
   const maintenance = new MaintenanceService(
     repository,
     local.repository,
@@ -86,6 +95,7 @@ async function setup() {
     mineRepository,
     puzzleRepository,
     snakeRepository,
+    flappyRepository,
   );
   const bot = new GameBotService(repository, groups, telegram, () => now, 'https://arcade.test/');
   async function verified(
@@ -138,6 +148,8 @@ async function setup() {
     puzzle,
     snakeRepository,
     snake,
+    flappyRepository,
+    flappy,
     maintenance,
     bot,
     telegram,
@@ -153,6 +165,59 @@ async function setup() {
   };
 }
 describe('group access and board scope', () => {
+  it.each(['2048', 'snake', 'minesweeper', 'flappy'] as const)(
+    'filters %s records by current membership and checks access on every request',
+    async (game) => {
+      const s = await setup();
+      const board = (groupId?: number) => {
+        const scope = groupId === undefined ? {} : { groupId };
+        if (game === '2048') return s.puzzle.leaderboard(s.player, { period: 'all', ...scope });
+        if (game === 'flappy') return s.flappy.leaderboard(s.player, { period: 'all', ...scope });
+        if (game === 'snake')
+          return s.snake.leaderboard(s.player, { size: 16, period: 'all', ...scope });
+        return s.minesweeper.leaderboard(s.player, { size: '9x9', period: 'all', ...scope });
+      };
+      for (const id of [1, 2, 3]) {
+        if (game === '2048') await puzzleResult(s, `group-${id}`, id, id * 100);
+        else if (game === 'flappy') await flappyResult(s, `group-${id}`, id, id * 10);
+        else if (game === 'snake') await snakeResult(s, `group-${id}`, id, id * 10);
+        else await mineResult(s, `group-${id}`, id, 4000 - id * 1000);
+      }
+      s.members.set(3, { active: false, admin: false });
+      s.advance(16 * 60_000);
+      const global = await board();
+      expect(global.entries.map((entry) => entry.playerId)).toEqual([3, 2, 1]);
+      const group = await board(-100);
+      expect(group.membershipSync).toBe('complete');
+      expect(group.entries.map((entry) => entry.playerId)).toEqual([2, 1]);
+      expect(group.me?.rank).toBe(2);
+      expect((await board()).me?.rank).toBe(3);
+      await expect(board(100)).rejects.toMatchObject({ code: 'BAD_INPUT' });
+      await expect(board(-200)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      s.members.set(1, { active: false, admin: false });
+      await expect(board(-100)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    },
+  );
+  it.each(['2048', 'snake', 'minesweeper', 'flappy'] as const)(
+    'reports pending and failed membership synchronization for %s',
+    async (game) => {
+      const s = await setup();
+      const sync = vi.spyOn(s.groups, 'synchronize');
+      for (const state of ['pending', 'failed'] as const) {
+        sync.mockResolvedValueOnce({ state, checkedSince: s.now() });
+        const input = { period: 'all', groupId: -100 } as const;
+        const board =
+          game === 'flappy'
+            ? await s.flappy.leaderboard(s.player, input)
+            : game === '2048'
+              ? await s.puzzle.leaderboard(s.player, input)
+              : game === 'snake'
+                ? await s.snake.leaderboard(s.player, { size: 16, ...input })
+                : await s.minesweeper.leaderboard(s.player, { size: '9x9', ...input });
+        expect(board.membershipSync).toBe(state);
+      }
+    },
+  );
   it('returns only known groups with freshly verified membership', async () => {
     const s = await setup();
     expect((await s.groups.list(s.player)).map((g) => g.id)).toEqual([-100]);
@@ -1551,5 +1616,246 @@ describe('delivery edge cases', () => {
       }),
     ).rejects.toThrow('Ephemeral');
     expect(calls).toBe(1);
+  });
+});
+
+async function flappyResult(
+  s: Awaited<ReturnType<typeof setup>>,
+  id: string,
+  playerId: number,
+  score: number,
+) {
+  const created = await s.flappy.create(
+    { id: playerId, name: `P${playerId}` },
+    { requestId: `flappy_fixture_${id}` },
+  );
+  const original = await s.flappyRepository.get(created.id);
+  if (!original) throw new Error('Missing flappy fixture');
+  await s.flappyRepository.save(
+    {
+      ...original,
+      revision: 1,
+      status: 'verified',
+      state: { ...original.state, score, status: 'over' },
+      verifiedAt: s.now(),
+    },
+    0,
+  );
+  const stored = await s.flappyRepository.get(created.id);
+  if (!stored) throw new Error('Missing flappy result');
+  return stored;
+}
+
+describe('Flappy Bird record announcements', () => {
+  it('discovers an actual verified flight from the persistent queue, without announcing an unfinished game', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    let run = await s.flappy.create(s.player, { requestId: 'flappy-real-replay-001' });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    const state = structuredClone(run.state);
+    while (state.status === 'playing') {
+      const from = state.ticks;
+      const flaps: number[] = [];
+      while (state.status === 'playing' && state.ticks - from < 100) {
+        const target = state.pipes.find((pipe) => pipe.x + 52000 > 68000)?.gapY ?? 220;
+        const flap =
+          state.ticks < 800 &&
+          state.ticks - state.lastFlap >= 4 &&
+          state.y / 1000 > target + 12 &&
+          state.velocity >= 0;
+        if (flap) flaps.push(state.ticks);
+        stepFlappy(state, flap);
+      }
+      s.advance(Math.ceil(((state.ticks - from) * 1000) / 60) + 1);
+      const input = { runId: run.id, revision: run.revision, untilTick: state.ticks, flaps };
+      run = await s.flappy.submit(s.player, input);
+      expect(await s.flappy.submit(s.player, input)).toEqual(run);
+    }
+    expect(state.score).toBeGreaterThan(0);
+    expect((await s.flappyRepository.pendingResults(3)).map((run) => run.id)).toEqual([run.id]);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain(`Flappy Bird · ${state.score} очков`);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+  });
+  it('announces the first score once and links back to Flappy Bird', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const run = await flappyResult(s, 'first', 1, 10);
+    await s.maintenance.flappyResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('Flappy Bird · 10 очков');
+    expect(s.sent[0]?.reply_markup?.inline_keyboard[0]?.[0]).toEqual({
+      text: '🎮 Побить рекорд',
+      url: 'https://t.me/arcade_bot?startapp=game_flappy',
+    });
+    await s.maintenance.flappyResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(await s.flappyRepository.pendingResults(3)).toEqual([]);
+  });
+  it('compares only group members, announces an overtake and a leader improvement', async () => {
+    const s = await setup();
+    await flappyResult(s, 'rival', 2, 100);
+    await flappyResult(s, 'outsider', 3, 1000);
+    s.members.set(3, { active: false, admin: false });
+    await s.repository.observeMember({
+      chatId: -100,
+      userId: 3,
+      active: false,
+      updatedAt: s.now(),
+    });
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const run = await flappyResult(s, 'winner', 1, 200);
+    await s.maintenance.flappyResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('Обошёл(ла) P2: больше на 100 очков');
+    expect((await s.flappy.leaderboard(s.player, { period: 'all' })).me?.rank).toBe(2);
+    s.advance(300001);
+    await s.maintenance.flappyResult(await flappyResult(s, 'improved', 1, 300));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(2);
+    expect(s.sent[1]?.text).toContain('Улучшен рекорд группы: больше на 100 очков');
+  });
+  it('ignores zero scores, same-place personal improvements, ties and results before enabling', async () => {
+    const s = await setup();
+    await flappyResult(s, 'leader', 2, 1000);
+    await flappyResult(s, 'second', 1, 100);
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    await s.maintenance.flappyResult(await flappyResult(s, 'personal', 1, 200));
+    await s.maintenance.flappyResult(await flappyResult(s, 'tie', 2, 1000));
+    await s.maintenance.flappyResult(await flappyResult(s, 'zero', 3, 0));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+  });
+  it('shares the cross-game cooldown and delivers a deferred record after five minutes', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.mineResult(await mineResult(s, 'before-flappy', 1, 10000));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    const run = await flappyResult(s, 'cooldown', 1, 100);
+    await s.maintenance.flappyResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(
+      await s.local.db.get('SELECT status,error FROM social_jobs WHERE id=:id', {
+        ':id': `record:${run.id}:-100`,
+      }),
+    ).toEqual({ status: 'pending', error: 'Group cooldown' });
+    s.advance(300001);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(2);
+    expect(s.sent[1]?.text).toContain('Flappy Bird');
+  });
+  it('orders snapshots by completion and suppresses superseded records before sending', async () => {
+    const s = await setup();
+    const early = await s.flappy.create(s.player, { requestId: 'flappy_early_12345678' });
+    await flappyResult(s, 'later-start', 2, 100);
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const original = await s.flappyRepository.get(early.id);
+    if (!original) throw new Error('Missing fixture');
+    await s.flappyRepository.save(
+      {
+        ...original,
+        revision: 1,
+        status: 'verified',
+        state: { ...original.state, score: 200, status: 'over' },
+        verifiedAt: s.now(),
+      },
+      0,
+    );
+    const a = await s.flappyRepository.get(early.id);
+    if (!a) throw new Error('Missing result');
+    expect(a.verifiedOrder).toBe(2);
+    const before = await s.flappyRepository.leaderboard(s.player, 'all', 0, {
+      groupId: -100,
+      maxResultOrder: 1,
+    });
+    expect(before.me).toBeNull();
+    expect(before.entries[0]?.playerId).toBe(2);
+    await s.maintenance.flappyResult(a);
+    await s.maintenance.flappyResult(await flappyResult(s, 'new-winner', 3, 300));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('P3');
+  });
+  it('retries Telegram errors and suppresses delivery after a player leaves or notifications are disabled', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.flappyResult(await flappyResult(s, 'retry', 1, 100));
+    const send = s.telegram.send;
+    s.telegram.send = vi
+      .fn()
+      .mockRejectedValueOnce({ code: 429, parameters: { retry_after: 2 } })
+      .mockImplementation(send);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    s.advance(2100);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    s.advance(300001);
+    await s.maintenance.flappyResult(await flappyResult(s, 'left', 1, 200));
+    s.members.set(1, { active: false, admin: false });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    s.members.set(1, { active: true, admin: true });
+    await s.maintenance.flappyResult(await flappyResult(s, 'off', 1, 300));
+    await s.groups.configure(s.player, { groupId: -100, enabled: false });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+  });
+  it('discovers flappy-only players in new groups without broadcasting old records', async () => {
+    const s = await setup();
+    await flappyResult(s, 'history', 2, 100);
+    await s.repository.upsertGroup({
+      id: -200,
+      title: 'Новая группа',
+      active: true,
+      botAdmin: true,
+    });
+    expect(await s.repository.membersToRefresh(-200, s.now() - 1000, 25)).toContain(2);
+    await s.groups.synchronize(-200);
+    expect(
+      (await s.flappyRepository.leaderboard(s.player, 'all', 0, { groupId: -200 })).entries[0]
+        ?.playerId,
+    ).toBe(2);
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -200, enabled: true });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+  });
+  it('defers incomplete membership verification and excludes records below the group top ten', async () => {
+    const s = await setup();
+    for (let id = 2; id <= 12; id++) {
+      s.members.set(id, { active: true, admin: false });
+      await flappyResult(s, `rival-${id}`, id, id * 10);
+    }
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.flappyResult(await flappyResult(s, 'outside-top', 1, 10));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    const winner = await flappyResult(s, 'after-outage', 1, 500);
+    s.advance(16 * 60000);
+    const member = s.telegram.member;
+    s.telegram.member = async (chat, id) => {
+      if (id === 2) throw new Error('Telegram outage');
+      return member(chat, id);
+    };
+    await expect(s.maintenance.flappyResult(winner)).rejects.toMatchObject({ code: 'UNAVAILABLE' });
+    expect((await s.flappyRepository.get(winner.id))?.socialProcessed).toBe(false);
+    s.telegram.member = member;
+    for (let i = 0; i < 5; i++) await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
   });
 });

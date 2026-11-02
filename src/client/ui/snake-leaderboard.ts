@@ -1,32 +1,28 @@
-import { SNAKE_SIZES } from '../../games/snake/engine.ts';
+import { SNAKE_PLAYABLE_SIZES } from '../../games/snake/engine.ts';
 import { snakeSize } from '../../shared/snake.ts';
 import { api, hasApi } from '../platform/api.ts';
 import { button, element, errorMessage } from './dom.ts';
+import { leaderboardGroups } from './leaderboard-groups.ts';
 
 export function mountSnakeLeaderboard(
   host: HTMLElement,
-  initialSize = 16,
-  compact = false,
+  initialGroupId?: number,
+  onGroupChange?: (id: number | undefined) => void,
 ): () => void {
   let disposed = false;
   let request = 0;
+  const groups = leaderboardGroups(update, initialGroupId, onGroupChange);
   const section = element('section', 'leaderboard-section');
-  section.append(
-    element(
-      compact ? 'h3' : 'h1',
-      compact ? '' : 'board-title',
-      compact ? 'Рекорды сада' : 'ЗМЕЙКА / РЕКОРДЫ',
-    ),
-  );
+  section.append(element('h1', 'board-title', 'ЗМЕЙКА / РЕКОРДЫ'));
   const filters = element('div', 'board-filters');
   const size = element('select', 'select');
   size.setAttribute('aria-label', 'Размер поля рейтинга змейки');
-  for (const value of SNAKE_SIZES) {
+  for (const value of SNAKE_PLAYABLE_SIZES) {
     const option = element('option', '', `${value} × ${value}`);
     option.value = String(value);
     size.append(option);
   }
-  size.value = String(initialSize);
+  size.value = String(16);
   const period = element('select', 'select');
   period.setAttribute('aria-label', 'Период рейтинга змейки');
   for (const [value, label] of [
@@ -37,11 +33,14 @@ export function mountSnakeLeaderboard(
     option.value = value;
     period.append(option);
   }
-  filters.append(size, period);
+  filters.append(groups.select, size, period);
   const results = element('div', 'board-results');
   results.setAttribute('aria-live', 'polite');
   section.append(
     filters,
+    groups.note,
+    groups.status,
+    groups.membershipStatus,
     results,
     element(
       'p',
@@ -51,6 +50,7 @@ export function mountSnakeLeaderboard(
   );
   host.replaceChildren(section);
   async function update() {
+    groups.beginUpdate();
     const token = ++request;
     results.replaceChildren(element('p', 'empty-state', 'Загружаем рекорды…'));
     try {
@@ -58,8 +58,10 @@ export function mountSnakeLeaderboard(
       const board = await api.snakeLeaderboard(
         snakeSize(Number(size.value)),
         period.value === 'week' ? 'week' : 'all',
+        groups.selected(),
       );
       if (disposed || token !== request) return;
+      groups.showMembership(board);
       results.replaceChildren();
       if (!board.entries.length)
         results.append(
@@ -107,8 +109,9 @@ export function mountSnakeLeaderboard(
     control.addEventListener('change', () => {
       void update();
     });
-  void update();
+  groups.start();
   return () => {
+    groups.dispose();
     disposed = true;
     request++;
   };

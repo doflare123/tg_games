@@ -1,10 +1,16 @@
 import { LEVELS, type MineSize, SIZES } from '../../games/minesweeper/engine.ts';
 import { api, hasApi } from '../platform/api.ts';
 import { button, element, errorMessage, formatMineTime } from './dom.ts';
+import { leaderboardGroups } from './leaderboard-groups.ts';
 
-export function mountMineLeaderboard(host: HTMLElement): () => void {
+export function mountMineLeaderboard(
+  host: HTMLElement,
+  initialGroupId?: number,
+  onGroupChange?: (id: number | undefined) => void,
+): () => void {
   let disposed = false;
   let request = 0;
+  const groups = leaderboardGroups(update, initialGroupId, onGroupChange);
   const section = element('section', 'leaderboard-section');
   section.append(
     element('span', 'eyebrow', 'MINESWEEPER / LEADERBOARD'),
@@ -28,11 +34,14 @@ export function mountMineLeaderboard(host: HTMLElement): () => void {
     option.value = value ?? 'all';
     period.append(option);
   }
-  filters.append(size, period);
+  filters.append(groups.select, size, period);
   const results = element('div', 'board-results');
   results.setAttribute('aria-live', 'polite');
   section.append(
     filters,
+    groups.note,
+    groups.status,
+    groups.membershipStatus,
     results,
     element(
       'p',
@@ -42,15 +51,19 @@ export function mountMineLeaderboard(host: HTMLElement): () => void {
   );
   host.replaceChildren(section);
   async function update(): Promise<void> {
+    groups.beginUpdate();
     const current = ++request;
     results.replaceChildren(element('p', 'empty-state', 'Загружаем рекорды…'));
     try {
       if (!hasApi) throw new Error('Открой Arcade внутри Telegram, чтобы увидеть рейтинги.');
+      const groupId = groups.selected();
       const board = await api.mineLeaderboard({
         size: size.value as MineSize,
         period: period.value === 'week' ? 'week' : 'all',
+        ...(groupId === undefined ? {} : { groupId }),
       });
       if (disposed || current !== request) return;
+      groups.showMembership(board);
       results.replaceChildren();
       if (!board.entries.length) {
         results.append(
@@ -106,8 +119,9 @@ export function mountMineLeaderboard(host: HTMLElement): () => void {
     control.addEventListener('change', () => {
       void update();
     });
-  void update();
+  groups.start();
   return () => {
+    groups.dispose();
     disposed = true;
     request++;
   };

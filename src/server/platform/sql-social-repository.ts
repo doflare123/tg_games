@@ -30,7 +30,9 @@ function decodeJob(value: unknown): SocialJob {
   const payload: JobPayload = {
     type: 'record',
     game:
-      p.game === undefined ? 'tetris' : oneOf(p.game, ['tetris', 'minesweeper', '2048', 'snake']),
+      p.game === undefined
+        ? 'tetris'
+        : oneOf(p.game, ['tetris', 'minesweeper', '2048', 'snake', 'flappy']),
     chatId,
     playerId: integer(p.playerId, 1, Number.MAX_SAFE_INTEGER),
     mode: text(p.mode, 1, 32),
@@ -101,6 +103,7 @@ export class SqlSocialRepository implements SocialRepository {
       UNION SELECT player_id FROM minesweeper_runs WHERE status='won'
       UNION SELECT player_id FROM puzzle2048_runs WHERE status='verified'
       UNION SELECT player_id FROM snake_runs WHERE status='verified'
+      UNION SELECT player_id FROM flappy_runs WHERE status='verified'
     ) SELECT p.player_id FROM players p LEFT JOIN group_memberships m ON m.user_id=p.player_id AND m.group_id=:group
       WHERE m.updated_at IS NULL OR m.updated_at<:since
       ORDER BY CASE WHEN m.updated_at IS NULL THEN 0 ELSE 1 END,m.updated_at,p.player_id LIMIT :limit`,
@@ -153,13 +156,13 @@ export class SqlSocialRepository implements SocialRepository {
   }
   async complete(job: SocialJob, status: 'done' | 'expired' | 'suppressed', error?: string) {
     await this.db.run(
-      'UPDATE social_jobs SET status=:status,lease_until=0,error=:error WHERE id=:id AND attempts=:attempt',
+      "UPDATE social_jobs SET status=:status,lease_until=0,error=:error WHERE id=:id AND attempts=:attempt AND status='running'",
       { ':id': job.id, ':attempt': job.attempts, ':status': status, ':error': error ?? null },
     );
   }
   async retry(job: SocialJob, dueAt: number, error: string) {
     await this.db.run(
-      `UPDATE social_jobs SET status='pending',due_at=:due,lease_until=0,error=:error WHERE id=:id AND attempts=:attempt`,
+      `UPDATE social_jobs SET status='pending',due_at=:due,lease_until=0,error=:error WHERE id=:id AND attempts=:attempt AND status='running'`,
       { ':id': job.id, ':attempt': job.attempts, ':due': dueAt, ':error': error.slice(0, 300) },
     );
   }

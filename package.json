@@ -8,6 +8,8 @@
   },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
+    "admin:install": "node --experimental-transform-types scripts/install-admin.ts",
+    "test:admin:browser": "node --experimental-transform-types scripts/admin-smoke.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.cloud.json",
     "test": "vitest run",
     "lint": "biome check .",
@@ -21,6 +23,7 @@
     "build:doom": "node scripts/build-doom.ts",
     "test:browser": "node scripts/browser-smoke.ts",
     "test:snake:browser": "node scripts/snake-smoke.ts",
+    "test:flappy:browser": "node scripts/flappy-smoke.ts",
     "setup:doom": "node scripts/setup-doom.ts",
     "test:production": "npm run build && node scripts/browser-smoke.ts --production",
     "diagnose:bot": "npm run build && node scripts/diagnose-bot.ts",

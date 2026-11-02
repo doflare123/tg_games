@@ -4,6 +4,7 @@ import {
   SNAKE_CHUNK,
   SNAKE_DIRECTIONS,
   SNAKE_MAX_TICKS,
+  SNAKE_PLAYABLE_SIZES,
   SNAKE_STEP_MS,
   type SnakeDirection,
   stepSnake,
@@ -12,7 +13,6 @@ import { object, oneOf, text } from '../../../shared/errors.ts';
 import { decodeSnakeState, type SnakeRun, snakeSize } from '../../../shared/snake.ts';
 import { api, hasApi } from '../../platform/api.ts';
 import { button, element, errorMessage } from '../../ui/dom.ts';
-import { mountSnakeLeaderboard } from '../../ui/snake-leaderboard.ts';
 import type { GameAdapter, GameHost } from '../adapter.ts';
 import { snakeInput } from './input.ts';
 import { snakeRenderer } from './renderer.ts';
@@ -27,7 +27,7 @@ export function mountSnake(host: GameHost, initialSize = 16): GameAdapter {
   const arenas = element('div', 'snake-arenas');
   arenas.setAttribute('role', 'group');
   arenas.setAttribute('aria-label', 'Арена змейки');
-  const arenaButtons = [16, 20, 24].map((value) => {
+  const arenaButtons = SNAKE_PLAYABLE_SIZES.map((value) => {
     const control = button(`${value}×${value}`, () => selectArena(value), 'button secondary');
     control.dataset.size = String(value);
     arenas.append(control);
@@ -130,16 +130,13 @@ export function mountSnake(host: GameHost, initialSize = 16): GameAdapter {
   bottom.append(pad, hint);
   play.append(arenas, toolbar, stats, field, actions, message, bottom);
   const aside = element('aside', 'snake-aside');
-  const boardHost = element('div');
   aside.append(
     element('span', 'eyebrow', 'SNAKE / GARDEN CLUB'),
     element('h2', '', 'РАСТИ.\nНЕ СДАВАЙСЯ.'),
     element('p', 'snake-intro', 'Арены 16×16, 20×20 и 24×24. Десять очков за каждое яблоко.'),
-    boardHost,
   );
   root.append(play, aside);
   host.container.replaceChildren(root);
-  let disposeBoard = mountSnakeLeaderboard(boardHost, initialSize, true);
   let state = createSnake(initialSize, 12345);
   let previous: number[] = [...state.body];
   let run: SnakeRun | null = null;
@@ -185,10 +182,6 @@ export function mountSnake(host: GameHost, initialSize = 16): GameAdapter {
             : 'Выбери арену и тип партии.';
     overlay.hidden = playing && !paused;
   }
-  function refreshBoard() {
-    disposeBoard();
-    disposeBoard = mountSnakeLeaderboard(boardHost, state.size, true);
-  }
   function clearPending() {
     try {
       localStorage.removeItem(PENDING_KEY);
@@ -214,7 +207,6 @@ export function mountSnake(host: GameHost, initialSize = 16): GameAdapter {
     verified = false;
     overlayTitle.textContent = `${selectedSize}×${selectedSize}`;
     overlayText.textContent = 'Выбери рейтинговую или свободную игру.';
-    refreshBoard();
     controls();
   }
   async function begin(isRanked: boolean) {
@@ -279,7 +271,6 @@ export function mountSnake(host: GameHost, initialSize = 16): GameAdapter {
         message.textContent = `Результат проверен и записан: ${accepted.state.score} очков.`;
         retry.hidden = discard.hidden = true;
         run = null;
-        refreshBoard();
       } else if (pending) message.textContent = 'Завершаем отправку результата…';
     } catch (error) {
       if (!disposed && run?.id === id) {
@@ -398,7 +389,6 @@ export function mountSnake(host: GameHost, initialSize = 16): GameAdapter {
       overlayTitle.textContent = 'РЕЗУЛЬТАТ ЖДЁТ ОТПРАВКИ';
       overlayText.textContent = `${state.score} очков`;
       retry.hidden = discard.hidden = false;
-      refreshBoard();
       void sync();
     }
   } catch {
@@ -429,7 +419,6 @@ export function mountSnake(host: GameHost, initialSize = 16): GameAdapter {
       cancelAnimationFrame(frame);
       clearInterval(retryTimer);
       stopInput();
-      disposeBoard();
       document.removeEventListener('visibilitychange', visibility);
       window.removeEventListener('blur', pause);
       root.remove();

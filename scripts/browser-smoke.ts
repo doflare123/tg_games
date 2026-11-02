@@ -513,6 +513,35 @@ try {
       original,
     );
     await page.screenshot({ path: '.cache/screenshots/group-leaderboard.png', fullPage: true });
+    for (const [game, endpoint] of [
+      ['minesweeper', 'getMineLeaderboard'],
+      ['2048', 'get2048Leaderboard'],
+      ['snake', 'getSnakeLeaderboard'],
+      ['tetris', 'getLeaderboard'],
+    ] as const) {
+      const response = page.waitForResponse(
+        (res) =>
+          res.url().endsWith(`/__dev/rpc/${endpoint}`) &&
+          res.request().postDataJSON().groupId === -10001,
+      );
+      await page.getByLabel('Игра рейтинга', { exact: true }).selectOption(game);
+      assert.equal((await response).ok(), true);
+      assert.equal(await groupSelect.inputValue(), '-10001');
+      const globalResponse = page.waitForResponse(
+        (res) =>
+          res.url().endsWith(`/__dev/rpc/${endpoint}`) &&
+          res.request().postDataJSON().groupId === undefined,
+      );
+      await groupSelect.selectOption('global');
+      assert.equal((await globalResponse).ok(), true);
+      const groupResponse = page.waitForResponse(
+        (res) =>
+          res.url().endsWith(`/__dev/rpc/${endpoint}`) &&
+          res.request().postDataJSON().groupId === -10001,
+      );
+      await groupSelect.selectOption('-10001');
+      assert.equal((await groupResponse).ok(), true);
+    }
   }
 
   await page.getByRole('button', { name: 'Игры', exact: true }).click();

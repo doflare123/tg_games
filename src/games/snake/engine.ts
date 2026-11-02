@@ -1,5 +1,7 @@
 export const SNAKE_RULESET = 'snake-v1';
+// Retain 12×12 for decoding historical runs; current arenas use SNAKE_PLAYABLE_SIZES.
 export const SNAKE_SIZES = [12, 16, 20, 24] as const;
+export const SNAKE_PLAYABLE_SIZES = [16, 20, 24] as const;
 export const SNAKE_DIRECTIONS = ['up', 'right', 'down', 'left'] as const;
 export type SnakeDirection = (typeof SNAKE_DIRECTIONS)[number];
 export const SNAKE_STEP_MS = 150;

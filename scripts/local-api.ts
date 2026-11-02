@@ -4,7 +4,9 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { LEGACY_2048_RULESET } from '../src/games/2048/engine.ts';
 import { Service2048 } from '../src/server/domain/2048.ts';
+import { isAdmin } from '../src/server/domain/admin.ts';
 import { ArcadeService } from '../src/server/domain/arcade.ts';
+import { FlappyService } from '../src/server/domain/flappy.ts';
 import { GroupService } from '../src/server/domain/groups.ts';
 import { MaintenanceService } from '../src/server/domain/maintenance.ts';
 import { MinesweeperService } from '../src/server/domain/minesweeper.ts';
@@ -15,6 +17,12 @@ import {
   SOCIAL_2048_COLUMNS,
   SOCIAL_2048_INDEXES,
 } from '../src/server/platform/2048-ddl.ts';
+import { installAdmin } from '../src/server/platform/admin-ddl.ts';
+import {
+  FLAPPY_DDL,
+  FLAPPY_SOCIAL_COLUMNS,
+  FLAPPY_SOCIAL_INDEXES,
+} from '../src/server/platform/flappy-ddl.ts';
 import { MANUAL_RESULTS_DDL } from '../src/server/platform/manual-results-ddl.ts';
 import { MINESWEEPER_DDL } from '../src/server/platform/minesweeper-ddl.ts';
 import {
@@ -28,6 +36,8 @@ import {
   SOCIAL_DDL,
 } from '../src/server/platform/social-ddl.ts';
 import { Sql2048Repository } from '../src/server/platform/sql-2048.ts';
+import { SqlAdminRepository } from '../src/server/platform/sql-admin.ts';
+import { SqlFlappyRepository } from '../src/server/platform/sql-flappy.ts';
 import { SqlMineRepository } from '../src/server/platform/sql-minesweeper.ts';
 import { SqlArcadeRepository, type SqlDatabase } from '../src/server/platform/sql-repository.ts';
 import { SqlSnakeRepository } from '../src/server/platform/sql-snake.ts';
@@ -61,6 +71,12 @@ export function localRepository(file = ':memory:') {
       database.exec(`ALTER TABLE groups ADD COLUMN ${name} ${definition}`);
   database.exec(MANUAL_RESULTS_DDL);
   database.exec(MINESWEEPER_DDL);
+  database.exec(FLAPPY_DDL);
+  const flappyColumns = database.prepare('PRAGMA table_info(flappy_runs)').all();
+  for (const [name, definition] of Object.entries(FLAPPY_SOCIAL_COLUMNS))
+    if (!flappyColumns.some((column) => column.name === name))
+      database.exec(`ALTER TABLE flappy_runs ADD COLUMN ${name} ${definition}`);
+  database.exec(FLAPPY_SOCIAL_INDEXES);
   database.exec(SNAKE_DDL);
   const snakeColumns = database.prepare('PRAGMA table_info(snake_runs)').all();
   for (const [name, definition] of Object.entries(SNAKE_SOCIAL_COLUMNS))
@@ -104,8 +120,9 @@ export function localRepository(file = ':memory:') {
   };
   return { db, repository: new SqlArcadeRepository(db), database, close: () => database.close() };
 }
-export function createLocalApi(file: string) {
+export function createLocalApi(file: string, ownerPreview = false) {
   const local = localRepository(file);
+  const adminReady = installAdmin(local.db, Date.now());
   const telegram: TelegramGateway = {
     async me() {
       return { id: 99, username: 'local_arcade_bot', hasMainMiniApp: false };
@@ -121,6 +138,7 @@ export function createLocalApi(file: string) {
   const social = new SqlSocialRepository(local.db, local.repository);
   const mineRepository = new SqlMineRepository(local.db);
   const puzzle2048Repository = new Sql2048Repository(local.db);
+  const flappyRepository = new SqlFlappyRepository(local.db);
   const snakeRepository = new SqlSnakeRepository(local.db);
   const groups = new GroupService(social, telegram, () => Date.now());
   const maintenance = new MaintenanceService(
@@ -132,8 +150,10 @@ export function createLocalApi(file: string) {
     mineRepository,
     puzzle2048Repository,
     snakeRepository,
+    flappyRepository,
   );
   const ready = (async () => {
+    await adminReady;
     await social.upsertGroup({
       id: -10001,
       title: 'Локальная тестовая группа',
@@ -147,18 +167,38 @@ export function createLocalApi(file: string) {
     { now: () => Date.now(), seed: () => Math.floor(Math.random() * 0x100000000) },
     groups,
   );
-  const player = { id: 1, name: 'Локальный игрок' };
-  const snake = new SnakeService(snakeRepository, {
-    now: () => Date.now(),
-    seed: () => Math.floor(Math.random() * 0x100000000),
-  });
-  const puzzle2048 = new Service2048(puzzle2048Repository, {
-    now: () => Date.now(),
-    seed: () => Math.floor(Math.random() * 0x100000000),
-  });
-  const minesweeper = new MinesweeperService(mineRepository, {
-    now: () => Date.now(),
-  });
+  const player = ownerPreview
+    ? { id: 930852883, name: 'Владелец (локально)' }
+    : { id: 1, name: 'Локальный игрок' };
+  const admin = new SqlAdminRepository(local.db, () => Date.now());
+  const flappy = new FlappyService(
+    flappyRepository,
+    { now: () => Date.now(), seed: () => Math.floor(Math.random() * 0x100000000) },
+    groups,
+  );
+  const snake = new SnakeService(
+    snakeRepository,
+    {
+      now: () => Date.now(),
+      seed: () => Math.floor(Math.random() * 0x100000000),
+    },
+    groups,
+  );
+  const puzzle2048 = new Service2048(
+    puzzle2048Repository,
+    {
+      now: () => Date.now(),
+      seed: () => Math.floor(Math.random() * 0x100000000),
+    },
+    groups,
+  );
+  const minesweeper = new MinesweeperService(
+    mineRepository,
+    {
+      now: () => Date.now(),
+    },
+    groups,
+  );
   const flushNotifications = async () => {
     try {
       await maintenance.sweep(3);
@@ -182,6 +222,7 @@ export function createLocalApi(file: string) {
           return;
         }
         await ready;
+        await adminReady;
         let body = '';
         for await (const chunk of req) {
           body += String(chunk);
@@ -191,6 +232,45 @@ export function createLocalApi(file: string) {
         const method = req.url?.split('?')[0]?.split('/').pop();
         let result: unknown;
         switch (method) {
+          case 'getAdminStats':
+            result = await admin.stats(player, input);
+            break;
+          case 'getAdminRows':
+            result = await admin.list(player, input);
+            break;
+          case 'previewAdminAction':
+            result = await admin.preview(player, input);
+            break;
+          case 'applyAdminAction':
+            result = await admin.apply(player, input);
+            break;
+          case 'createFlappyRun':
+            result = await flappy.create(player, input);
+            await flushNotifications();
+            break;
+          case 'getFlappyRun':
+            result = await flappy.get(player, input);
+            await flushNotifications();
+            break;
+          case 'submitFlappyReplay':
+            {
+              const outcome = await flappy.submit(player, input);
+              result = outcome;
+              if (outcome.status === 'verified') {
+                try {
+                  const run = await flappyRepository.get(outcome.id);
+                  if (run) await maintenance.flappyResult(run);
+                } catch {
+                  /* Retry notification generation independently from saving results. */
+                }
+              }
+              await flushNotifications();
+            }
+            break;
+          case 'getFlappyLeaderboard':
+            result = await flappy.leaderboard(player, input);
+            await flushNotifications();
+            break;
           case 'createSnakeRun':
             result = await snake.create(player, input);
             await flushNotifications();
@@ -277,8 +357,9 @@ export function createLocalApi(file: string) {
             result = service.catalog();
             break;
           case 'getProfile':
+            await admin.observe(player);
             await flushNotifications();
-            result = player;
+            result = { ...player, isAdmin: isAdmin(player) };
             break;
           case 'createRun':
             result = await service.create(player, input);

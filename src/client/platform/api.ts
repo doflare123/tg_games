@@ -1,8 +1,10 @@
 import { RULESET_2048, type Ruleset2048 } from '../../games/2048/engine.ts';
 import type { TetrisMode } from '../../games/tetris/types.ts';
 import { decodeBoard2048, decodeRun2048 } from '../../shared/2048.ts';
+import { decodeAdminPage, decodeAdminPreview, decodeAdminStats } from '../../shared/admin.ts';
 import type { EndpointInput, EndpointName, Player, ReplayInput } from '../../shared/contracts.ts';
 import { AppError, integer, object, oneOf, text } from '../../shared/errors.ts';
+import { decodeFlappyBoard, decodeFlappyRun } from '../../shared/flappy.ts';
 import { decodeGroup } from '../../shared/groups.ts';
 import { decodeMineLeaderboard, decodeMineResult } from '../../shared/minesweeper.ts';
 import { decodeSnakeBoard, decodeSnakeRun } from '../../shared/snake.ts';
@@ -62,6 +64,32 @@ async function call<K extends EndpointName>(name: K, input: EndpointInput<K>): P
   throw new AppError('UNAUTHORIZED', 'Рейтинговая игра доступна внутри Telegram');
 }
 export const api = {
+  async adminStats(weeks = 8) {
+    return decodeAdminStats(await call('getAdminStats', { weeks }));
+  },
+  async adminRows(input: EndpointInput<'getAdminRows'>) {
+    return decodeAdminPage(await call('getAdminRows', input));
+  },
+  async adminPreview(input: EndpointInput<'previewAdminAction'>) {
+    return decodeAdminPreview(await call('previewAdminAction', input));
+  },
+  async adminApply(input: EndpointInput<'applyAdminAction'>) {
+    return { id: text(object(await call('applyAdminAction', input)).id, 16, 64) };
+  },
+  async createFlappy(requestId: string) {
+    return decodeFlappyRun(await call('createFlappyRun', { requestId }));
+  },
+  async getFlappy(runId: string) {
+    return decodeFlappyRun(await call('getFlappyRun', { runId }));
+  },
+  async submitFlappy(input: EndpointInput<'submitFlappyReplay'>) {
+    return decodeFlappyRun(await call('submitFlappyReplay', input));
+  },
+  async flappyLeaderboard(period: 'all' | 'week', groupId?: number) {
+    return decodeFlappyBoard(
+      await call('getFlappyLeaderboard', { period, ...(groupId === undefined ? {} : { groupId }) }),
+    );
+  },
   async createSnake(requestId: string, size: number) {
     return decodeSnakeRun(await call('createSnakeRun', { requestId, size }));
   },
@@ -71,8 +99,14 @@ export const api = {
   async submitSnake(input: EndpointInput<'submitSnakeReplay'>) {
     return decodeSnakeRun(await call('submitSnakeReplay', input));
   },
-  async snakeLeaderboard(size: number, period: 'all' | 'week') {
-    return decodeSnakeBoard(await call('getSnakeLeaderboard', { size, period }));
+  async snakeLeaderboard(size: number, period: 'all' | 'week', groupId?: number) {
+    return decodeSnakeBoard(
+      await call('getSnakeLeaderboard', {
+        size,
+        period,
+        ...(groupId === undefined ? {} : { groupId }),
+      }),
+    );
   },
   async create2048(requestId: string) {
     return decodeRun2048(await call('create2048Run', { requestId, ruleset: RULESET_2048 }));
@@ -83,8 +117,18 @@ export const api = {
   async submit2048(input: EndpointInput<'submit2048Moves'>) {
     return decodeRun2048(await call('submit2048Moves', input));
   },
-  async leaderboard2048(period: 'all' | 'week', ruleset: Ruleset2048 = RULESET_2048) {
-    return decodeBoard2048(await call('get2048Leaderboard', { period, ruleset }));
+  async leaderboard2048(
+    period: 'all' | 'week',
+    ruleset: Ruleset2048 = RULESET_2048,
+    groupId?: number,
+  ) {
+    return decodeBoard2048(
+      await call('get2048Leaderboard', {
+        period,
+        ruleset,
+        ...(groupId === undefined ? {} : { groupId }),
+      }),
+    );
   },
   async submitMine(input: EndpointInput<'submitMineResult'>) {
     return decodeMineResult(await call('submitMineResult', input));
@@ -92,9 +136,13 @@ export const api = {
   async mineLeaderboard(input: EndpointInput<'getMineLeaderboard'>) {
     return decodeMineLeaderboard(await call('getMineLeaderboard', input));
   },
-  async profile(): Promise<Player> {
+  async profile(): Promise<Player & { isAdmin: boolean }> {
     const p = object(await call('getProfile', {}));
-    return { id: integer(p.id, 1, Number.MAX_SAFE_INTEGER), name: text(p.name, 1, 100) };
+    return {
+      id: integer(p.id, 1, Number.MAX_SAFE_INTEGER),
+      name: text(p.name, 1, 100),
+      isAdmin: p.isAdmin === true,
+    };
   },
   async create(mode: TetrisMode, requestId: string) {
     return decodeRun(await call('createRun', { mode, requestId }));

@@ -68,7 +68,7 @@ try {
       .click();
   await page.screenshot({ path: '.cache/screenshots/snake-desktop-ready.png', fullPage: true });
   await arenas.getByRole('button', { name: '20×20', exact: true }).click();
-  assert.equal(await page.getByLabel('Размер поля рейтинга змейки').inputValue(), '20');
+  assert.equal(await page.locator('.snake-game .leaderboard-section').count(), 0);
   await arenas.getByRole('button', { name: '16×16', exact: true }).click();
   await launch();
   await page.locator('.snake-overlay').waitFor({ state: 'hidden' });
@@ -79,7 +79,7 @@ try {
     await page.getByText(/Результат проверен и записан:/).waitFor();
     assert.ok(replays.some((r) => r.directions.includes('up')));
     assert.equal(await page.evaluate(() => localStorage.getItem('arcade:snake:pending:v1')), null);
-    assert.match((await page.locator('.personal-record').textContent()) ?? '', /Твоё место/);
+    assert.equal(await page.locator('.snake-game .leaderboard-section').count(), 0);
     // A response lost after the server committed must be recovered through getSnake.
     let loseOnce = true;
     await page.route('**/__dev/rpc/submitSnakeReplay', async (route) => {
@@ -115,6 +115,10 @@ try {
   await page.getByRole('button', { name: 'Рекорды', exact: true }).click();
   await page.getByLabel('Игра рейтинга', { exact: true }).selectOption('snake');
   await page.getByRole('heading', { name: 'ЗМЕЙКА / РЕКОРДЫ' }).waitFor();
+  assert.deepEqual(
+    await page.getByLabel('Размер поля рейтинга змейки').locator('option').allTextContents(),
+    ['16 × 16', '20 × 20', '24 × 24'],
+  );
 
   const phone = await browser.newPage({
     viewport: { width: 390, height: 844 },

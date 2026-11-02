@@ -2,6 +2,8 @@ import { MINE_LIMIT_MS, type MineSize, SIZES } from '../../games/minesweeper/eng
 import type { Period, Player } from '../../shared/contracts.ts';
 import { AppError, integer, object, oneOf, text } from '../../shared/errors.ts';
 import type { MineLeaderboard, MineResult } from '../../shared/minesweeper.ts';
+import type { GroupService } from './groups.ts';
+import { leaderboardScope } from './leaderboard-scope.ts';
 
 export interface StoredMineResult extends MineResult {
   playerId: number;
@@ -36,6 +38,7 @@ export class MinesweeperService {
   constructor(
     private readonly repository: MineRepository,
     private readonly clock: { now(): number },
+    private readonly groups?: GroupService,
   ) {}
   async submit(player: Player, input: unknown): Promise<MineResult> {
     const data = object(input);
@@ -68,9 +71,17 @@ export class MinesweeperService {
     const data = object(input);
     const size = oneOf(data.size, SIZES);
     const period = oneOf(data.period, ['all', 'week']);
+    const { scope, state } = await leaderboardScope(player, data.groupId, this.groups);
     const date = new Date(this.clock.now());
     date.setUTCHours(0, 0, 0, 0);
     date.setUTCDate(date.getUTCDate() - ((date.getUTCDay() + 6) % 7));
-    return this.repository.leaderboard(player, size, period, period === 'all' ? 0 : date.getTime());
+    const board = await this.repository.leaderboard(
+      player,
+      size,
+      period,
+      period === 'all' ? 0 : date.getTime(),
+      scope,
+    );
+    return { ...board, ...state };
   }
 }

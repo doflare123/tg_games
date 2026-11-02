@@ -1,6 +1,7 @@
 import { MINE_LIMIT_MS, type MineSize, SIZES } from '../games/minesweeper/engine.ts';
 import type { Period } from './contracts.ts';
 import { AppError, integer, object, oneOf, text } from './errors.ts';
+import { decodeGroupLeaderboardState, type GroupLeaderboardState } from './groups.ts';
 
 export interface MineResultInput {
   requestId: string;
@@ -19,7 +20,7 @@ export interface MineEntry {
   elapsedMs: number;
   runId: string;
 }
-export interface MineLeaderboard {
+export interface MineLeaderboard extends GroupLeaderboardState {
   size: MineSize;
   period: Period;
   entries: MineEntry[];
@@ -50,6 +51,7 @@ export function decodeMineLeaderboard(value: unknown): MineLeaderboard {
   return {
     size: oneOf(r.size, SIZES),
     period: oneOf(r.period, ['all', 'week']),
+    ...decodeGroupLeaderboardState(r.membershipSync),
     entries: r.entries.map(decodeMineEntry),
     me: r.me === null ? null : decodeMineEntry(r.me),
   };

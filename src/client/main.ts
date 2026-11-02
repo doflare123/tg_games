@@ -2,6 +2,7 @@ import type { MineSize } from '../games/minesweeper/engine.ts';
 import { createSnake } from '../games/snake/engine.ts';
 import { snakeRenderer } from './games/snake/renderer.ts';
 import './games/snake/snake.css';
+import './games/flappy/flappy.css';
 import { type LaunchTarget, parseLaunch } from '../shared/launch.ts';
 import { mountLeaderboard } from './ui/leaderboard.ts';
 import './styles.css';
@@ -35,6 +36,7 @@ const boardTab = button(
   },
   'nav-button',
 );
+const adminTab = button('Кабинет', () => navigate({ view: 'admin' }), 'nav-button');
 navigation.append(gamesTab, boardTab);
 const identity = element(
   'span',
@@ -62,18 +64,22 @@ if (hasApi)
     .profile()
     .then((player) => {
       identity.textContent = `● ${player.name}`;
+      if (player.isAdmin) navigation.append(adminTab);
     })
     .catch(() => {
       identity.textContent = '● ГОСТЬ';
     });
 function tabs(board: boolean): void {
+  adminTab.classList.remove('active');
   gamesTab.classList.toggle('active', !board);
   boardTab.classList.toggle('active', board);
 }
 function preview(game: GameInfo): HTMLElement {
   const visual = element('div', `game-preview ${game.id}-preview`);
   visual.setAttribute('aria-hidden', 'true');
-  if (game.id === 'snake') {
+  if (game.id === 'flappy') {
+    visual.append(element('span', 'preview-watermark', 'ONE MORE FLIGHT'));
+  } else if (game.id === 'snake') {
     const canvas = element('canvas');
     const state = createSnake(12, 123);
     state.body = [45, 44, 43, 55, 67, 79, 78, 77, 76, 64, 52, 40, 28, 29, 30];
@@ -182,7 +188,7 @@ function renderCatalog(): void {
     element(
       'p',
       'hero-description',
-      'Тетрис, Сапёр, 2048 и Змейка.\nВыбирай игру и вырасти свой рекорд.',
+      'Тетрис, Сапёр, 2048, Змейка и Flappy Bird.\nВыбирай игру и вырасти свой рекорд.',
     ),
   );
   const actions = element('div', 'hero-actions');
@@ -216,7 +222,7 @@ function renderCatalog(): void {
   const sectionHead = element('div', 'section-heading');
   sectionHead.append(
     element('h2', '', 'ВЫБИРАЙ СВОЮ ИГРУ'),
-    element('span', 'eyebrow', '04 GAMES / ∞ ATTEMPTS'),
+    element('span', 'eyebrow', `${String(CATALOG.length).padStart(2, '0')} GAMES / ∞ ATTEMPTS`),
   );
   const grid = element('div', 'games-grid');
   CATALOG.forEach((game, index) => {
@@ -256,6 +262,7 @@ function renderCatalog(): void {
   content.append(hero, section, note);
 }
 function routeHash(target: LaunchTarget): string {
+  if (target.view === 'admin') return '#admin';
   if (target.view === 'game') {
     const variant =
       target.game === 'tetris'
@@ -310,6 +317,27 @@ function renderPage(target: LaunchTarget, restoreFocus = false): void {
         target.snakeSize ?? 16,
       );
     else navigate({ view: 'catalog' }, true);
+  } else if (target.view === 'admin') {
+    gamesTab.classList.remove('active');
+    boardTab.classList.remove('active');
+    adminTab.classList.add('active');
+    document.title = 'Кабинет владельца — Arcade';
+    const page = element('section');
+    content.append(page);
+    let closed = false;
+    let dispose: (() => void) | undefined;
+    disposeBoard = () => {
+      closed = true;
+      dispose?.();
+      page.remove();
+    };
+    void import('./ui/admin.ts')
+      .then((module) => {
+        if (!closed) dispose = module.mountAdmin(page);
+      })
+      .catch((error) => {
+        if (!closed) page.replaceChildren(element('p', 'empty-state', errorMessage(error)));
+      });
   } else if (target.view === 'leaderboard') {
     tabs(true);
     disposeBoard = mountLeaderboard(content, target.groupId);
@@ -376,27 +404,30 @@ async function mountGamePage(
   try {
     const host = { container: body, onClose: close };
     const mount =
-      game.id === 'tetris'
+      game.id === 'flappy'
         ? (host: { container: HTMLElement; onClose(): void }) =>
-            import('./games/tetris/controller.ts').then((module) =>
-              module.mountTetris(host, initialMode),
-            )
-        : game.id === 'snake'
+            import('./games/flappy/controller.ts').then((module) => module.mountFlappy(host))
+        : game.id === 'tetris'
           ? (host: { container: HTMLElement; onClose(): void }) =>
-              import('./games/snake/controller.ts').then((module) =>
-                module.mountSnake(host, initialSnakeSize),
+              import('./games/tetris/controller.ts').then((module) =>
+                module.mountTetris(host, initialMode),
               )
-          : game.id === '2048'
+          : game.id === 'snake'
             ? (host: { container: HTMLElement; onClose(): void }) =>
-                import('./games/2048/controller.ts').then((module) => module.mount2048(host))
-            : game.id === 'minesweeper'
+                import('./games/snake/controller.ts').then((module) =>
+                  module.mountSnake(host, initialSnakeSize),
+                )
+            : game.id === '2048'
               ? (host: { container: HTMLElement; onClose(): void }) =>
-                  import('./games/minesweeper/controller.ts').then((module) =>
-                    module.mountMinesweeper(host, initialSize),
-                  )
-              : game.id === 'mario'
-                ? (await import('./games/mario/adapter.ts')).mountMario
-                : (await import('./games/doom/adapter.ts')).mountDoom;
+                  import('./games/2048/controller.ts').then((module) => module.mount2048(host))
+              : game.id === 'minesweeper'
+                ? (host: { container: HTMLElement; onClose(): void }) =>
+                    import('./games/minesweeper/controller.ts').then((module) =>
+                      module.mountMinesweeper(host, initialSize),
+                    )
+                : game.id === 'mario'
+                  ? (await import('./games/mario/adapter.ts')).mountMario
+                  : (await import('./games/doom/adapter.ts')).mountDoom;
     if (closed) return;
     body.replaceChildren();
     adapter = await mount(host);

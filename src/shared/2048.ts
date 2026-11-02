@@ -8,6 +8,7 @@ import {
 } from '../games/2048/engine.ts';
 import type { Period } from './contracts.ts';
 import { AppError, integer, object, oneOf, text } from './errors.ts';
+import { decodeGroupLeaderboardState, type GroupLeaderboardState } from './groups.ts';
 
 export interface Run2048 {
   id: string;
@@ -32,7 +33,7 @@ export interface Entry2048 {
   maxTile: number;
   runId: string;
 }
-export interface Board2048 {
+export interface Board2048 extends GroupLeaderboardState {
   ruleset: Ruleset2048;
   period: Period;
   entries: Entry2048[];
@@ -86,6 +87,7 @@ export function decodeBoard2048(value: unknown): Board2048 {
   return {
     ruleset: r.ruleset === undefined ? LEGACY_2048_RULESET : oneOf(r.ruleset, RULESETS_2048),
     period: oneOf(r.period, ['all', 'week']),
+    ...decodeGroupLeaderboardState(r.membershipSync),
     entries: r.entries.map(decodeEntry2048),
     me: r.me === null ? null : decodeEntry2048(r.me),
   };

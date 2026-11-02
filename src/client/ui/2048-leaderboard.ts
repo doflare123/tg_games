@@ -1,10 +1,16 @@
 import { LEGACY_2048_RULESET, RULESET_2048 } from '../../games/2048/engine.ts';
 import { api, hasApi } from '../platform/api.ts';
 import { button, element, errorMessage } from './dom.ts';
+import { leaderboardGroups } from './leaderboard-groups.ts';
 
-export function mount2048Leaderboard(host: HTMLElement): () => void {
+export function mount2048Leaderboard(
+  host: HTMLElement,
+  initialGroupId?: number,
+  onGroupChange?: (id: number | undefined) => void,
+): () => void {
   let disposed = false;
   let request = 0;
+  const groups = leaderboardGroups(update, initialGroupId, onGroupChange);
   const section = element('section', 'leaderboard-section');
   section.append(
     element('span', 'eyebrow', '2048 / LEADERBOARD'),
@@ -31,20 +37,24 @@ export function mount2048Leaderboard(host: HTMLElement): () => void {
     option.value = value;
     rules.append(option);
   }
-  filters.append(rules, period);
+  filters.append(groups.select, rules, period);
   const results = element('div', 'board-results');
   results.setAttribute('aria-live', 'polite');
   section.append(
     filters,
+    groups.note,
+    groups.status,
+    groups.membershipStatus,
     results,
     element(
       'p',
       'control-hint',
-      'Общий рейтинг 2048: лучший счёт каждого игрока. Больше очков — выше место; при равенстве выше более ранняя партия. Очки начисляются за слияния и не суммируются между партиями. Неделя начинается в понедельник, UTC, по дате начала партии.',
+      'Рейтинг 2048: лучший счёт каждого игрока. Больше очков — выше место; при равенстве выше более ранняя партия. Очки начисляются за слияния и не суммируются между партиями. Неделя начинается в понедельник, UTC, по дате начала партии.',
     ),
   );
   host.replaceChildren(section);
   async function update(): Promise<void> {
+    groups.beginUpdate();
     const current = ++request;
     results.replaceChildren(element('p', 'empty-state', 'Загружаем рекорды…'));
     try {
@@ -52,8 +62,10 @@ export function mount2048Leaderboard(host: HTMLElement): () => void {
       const board = await api.leaderboard2048(
         period.value === 'week' ? 'week' : 'all',
         rules.value === LEGACY_2048_RULESET ? LEGACY_2048_RULESET : RULESET_2048,
+        groups.selected(),
       );
       if (disposed || current !== request) return;
+      groups.showMembership(board);
       results.replaceChildren();
       if (!board.entries.length) {
         results.append(
@@ -109,8 +121,9 @@ export function mount2048Leaderboard(host: HTMLElement): () => void {
   rules.addEventListener('change', () => {
     void update();
   });
-  void update();
+  groups.start();
   return () => {
+    groups.dispose();
     disposed = true;
     request++;
   };

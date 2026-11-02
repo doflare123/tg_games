@@ -1,6 +1,6 @@
 import { SNAKE_RULESET } from '../../games/snake/engine.ts';
 import type { Period, Player } from '../../shared/contracts.ts';
-import { integer, object, text } from '../../shared/errors.ts';
+import { AppError, integer, object, text } from '../../shared/errors.ts';
 import { decodeSnakeBoard, decodeSnakeRun } from '../../shared/snake.ts';
 import type { SnakeBoardScope, SnakeRepository, StoredSnake } from '../domain/snake.ts';
 import type { SqlDatabase } from './sql-repository.ts';
@@ -11,6 +11,8 @@ export class SqlSnakeRepository implements SnakeRepository {
     const value = await this.db.get('SELECT * FROM snake_runs WHERE id=:id', { ':id': id });
     if (value == null) return null;
     const r = object(value);
+    if (r.status === 'unranked')
+      throw new AppError('CONFLICT', 'Результат снят владельцем из рейтинга');
     return {
       ...decodeSnakeRun({
         id: r.id,

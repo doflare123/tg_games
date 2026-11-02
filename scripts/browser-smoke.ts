@@ -82,6 +82,7 @@ try {
     'Сапёр',
     '2048',
     'Змейка',
+    'Flappy Bird',
   ]);
   assert.doesNotMatch((await page.locator('body').textContent()) ?? '', /doom|mario|дум|марио/i);
   assert.doesNotMatch(

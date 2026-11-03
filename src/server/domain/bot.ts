@@ -6,7 +6,7 @@ import type { SocialRepository } from './social-repository.ts';
 import type { LaunchButton, TelegramCommand, TelegramGateway } from './telegram.ts';
 export const GAME_COMMANDS: TelegramCommand[] = [
   ...CATALOG.filter((game) => game.available).map((game) => ({
-    command: `game_${game.id}`,
+    command: `game_${game.id.replaceAll('-', '_')}`,
     description: `Сразу открыть ${game.title}`,
     is_ephemeral: true,
   })),
@@ -45,7 +45,7 @@ export class GameBotService {
     const msg = object(payload);
     const body = typeof msg.text === 'string' ? msg.text.trim() : '';
     const match =
-      /^\/(start|help|games|top|game_doom|game_mario|game_tetris|game_minesweeper|game_2048|game_snake|game_flappy|game_top|game_notify_here|game_notify_on|game_notify_off)(?:@([a-zA-Z0-9_]+))?(?:\s|$)/.exec(
+      /^\/(start|help|games|top|game_doom|game_mario|game_tetris|game_minesweeper|game_2048|game_snake|game_flappy|game_block_blast|game_top|game_notify_here|game_notify_on|game_notify_off)(?:@([a-zA-Z0-9_]+))?(?:\s|$)/.exec(
         body,
       );
     if (!match?.[1]) return;
@@ -86,7 +86,9 @@ export class GameBotService {
       // A command seen from the user is a discovery hint, never the authorization check.
     }
     const command = match[1];
-    const game = CATALOG.find((game) => game.available && command === `game_${game.id}`);
+    const game = CATALOG.find(
+      (game) => game.available && command === `game_${game.id.replaceAll('-', '_')}`,
+    );
     let target = game
       ? `game_${game.id}`
       : command === 'top' || command === 'game_top'

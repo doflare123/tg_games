@@ -2,6 +2,7 @@ import type { TetrisMode } from '../../games/tetris/types.ts';
 import type { GroupView } from '../../shared/groups.ts';
 import { api, hasApi } from '../platform/api.ts';
 import { mount2048Leaderboard } from './2048-leaderboard.ts';
+import { mountBlockLeaderboard } from './block-blast-leaderboard.ts';
 import { button, element, errorMessage, formatTime } from './dom.ts';
 import { mountFlappyLeaderboard } from './flappy-leaderboard.ts';
 import { mountMineLeaderboard } from './mine-leaderboard.ts';
@@ -18,6 +19,7 @@ export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): ()
     ['2048', '2048'],
     ['snake', 'Змейка'],
     ['flappy', 'Flappy Bird'],
+    ['block-blast', 'Block Blast'],
   ]) {
     const option = element('option', '', label);
     option.value = value ?? 'tetris';
@@ -35,15 +37,17 @@ export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): ()
   picker.addEventListener('change', () => {
     dispose();
     dispose =
-      picker.value === 'flappy'
-        ? mountFlappyLeaderboard(content, selectedGroupId, onGroupChange)
-        : picker.value === 'snake'
-          ? mountSnakeLeaderboard(content, selectedGroupId, onGroupChange)
-          : picker.value === '2048'
-            ? mount2048Leaderboard(content, selectedGroupId, onGroupChange)
-            : picker.value === 'minesweeper'
-              ? mountMineLeaderboard(content, selectedGroupId, onGroupChange)
-              : mountTetrisLeaderboard(content, selectedGroupId, onGroupChange);
+      picker.value === 'block-blast'
+        ? mountBlockLeaderboard(content, selectedGroupId, onGroupChange)
+        : picker.value === 'flappy'
+          ? mountFlappyLeaderboard(content, selectedGroupId, onGroupChange)
+          : picker.value === 'snake'
+            ? mountSnakeLeaderboard(content, selectedGroupId, onGroupChange)
+            : picker.value === '2048'
+              ? mount2048Leaderboard(content, selectedGroupId, onGroupChange)
+              : picker.value === 'minesweeper'
+                ? mountMineLeaderboard(content, selectedGroupId, onGroupChange)
+                : mountTetrisLeaderboard(content, selectedGroupId, onGroupChange);
   });
   return () => dispose();
 }

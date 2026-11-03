@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { localRepository } from '../scripts/local-api.ts';
 import { DIRECTIONS, type Direction, move2048 } from '../src/games/2048/engine.ts';
+import { blockPlacements, moveBlockBlast } from '../src/games/block-blast/engine.ts';
 import { stepFlappy } from '../src/games/flappy/engine.ts';
 import { type MineSize, SIZES } from '../src/games/minesweeper/engine.ts';
 import {
@@ -14,6 +15,7 @@ import { createTetris } from '../src/games/tetris/engine.ts';
 import type { TetrisMode } from '../src/games/tetris/types.ts';
 import { Service2048 } from '../src/server/domain/2048.ts';
 import { ArcadeService } from '../src/server/domain/arcade.ts';
+import { BlockService } from '../src/server/domain/block-blast.ts';
 import { type GAME_COMMANDS, GameBotService } from '../src/server/domain/bot.ts';
 import { FlappyService } from '../src/server/domain/flappy.ts';
 import { GroupService } from '../src/server/domain/groups.ts';
@@ -24,6 +26,7 @@ import type { StoredRun } from '../src/server/domain/repository.ts';
 import { SnakeService } from '../src/server/domain/snake.ts';
 import type { SendMessage, TelegramGateway } from '../src/server/domain/telegram.ts';
 import { Sql2048Repository } from '../src/server/platform/sql-2048.ts';
+import { SqlBlockRepository } from '../src/server/platform/sql-block-blast.ts';
 import { SqlFlappyRepository } from '../src/server/platform/sql-flappy.ts';
 import { SqlManualResultRepository } from '../src/server/platform/sql-manual-results.ts';
 import { SqlMineRepository } from '../src/server/platform/sql-minesweeper.ts';
@@ -76,6 +79,12 @@ async function setup() {
   const minesweeper = new MinesweeperService(mineRepository, { now: () => now }, groups);
   const puzzleRepository = new Sql2048Repository(local.db);
   const puzzle = new Service2048(puzzleRepository, { now: () => now, seed: () => 123 }, groups);
+  const blockBlastRepository = new SqlBlockRepository(local.db);
+  const blockBlast = new BlockService(
+    blockBlastRepository,
+    { now: () => now, seed: () => 123 },
+    groups,
+  );
   const flappyRepository = new SqlFlappyRepository(local.db);
   const flappy = new FlappyService(flappyRepository, { now: () => now, seed: () => 123 }, groups);
   const snakeRepository = new SqlSnakeRepository(local.db);
@@ -96,6 +105,7 @@ async function setup() {
     puzzleRepository,
     snakeRepository,
     flappyRepository,
+    blockBlastRepository,
   );
   const bot = new GameBotService(repository, groups, telegram, () => now, 'https://arcade.test/');
   async function verified(
@@ -150,6 +160,8 @@ async function setup() {
     snake,
     flappyRepository,
     flappy,
+    blockBlast,
+    blockBlastRepository,
     maintenance,
     bot,
     telegram,
@@ -165,12 +177,14 @@ async function setup() {
   };
 }
 describe('group access and board scope', () => {
-  it.each(['2048', 'snake', 'minesweeper', 'flappy'] as const)(
+  it.each(['2048', 'snake', 'minesweeper', 'flappy', 'block-blast'] as const)(
     'filters %s records by current membership and checks access on every request',
     async (game) => {
       const s = await setup();
       const board = (groupId?: number) => {
         const scope = groupId === undefined ? {} : { groupId };
+        if (game === 'block-blast')
+          return s.blockBlast.leaderboard(s.player, { period: 'all', ...scope });
         if (game === '2048') return s.puzzle.leaderboard(s.player, { period: 'all', ...scope });
         if (game === 'flappy') return s.flappy.leaderboard(s.player, { period: 'all', ...scope });
         if (game === 'snake')
@@ -178,7 +192,8 @@ describe('group access and board scope', () => {
         return s.minesweeper.leaderboard(s.player, { size: '9x9', period: 'all', ...scope });
       };
       for (const id of [1, 2, 3]) {
-        if (game === '2048') await puzzleResult(s, `group-${id}`, id, id * 100);
+        if (game === 'block-blast') await blockBlastResult(s, `group-${id}`, id, id * 100);
+        else if (game === '2048') await puzzleResult(s, `group-${id}`, id, id * 100);
         else if (game === 'flappy') await flappyResult(s, `group-${id}`, id, id * 10);
         else if (game === 'snake') await snakeResult(s, `group-${id}`, id, id * 10);
         else await mineResult(s, `group-${id}`, id, 4000 - id * 1000);
@@ -198,7 +213,7 @@ describe('group access and board scope', () => {
       await expect(board(-100)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     },
   );
-  it.each(['2048', 'snake', 'minesweeper', 'flappy'] as const)(
+  it.each(['2048', 'snake', 'minesweeper', 'flappy', 'block-blast'] as const)(
     'reports pending and failed membership synchronization for %s',
     async (game) => {
       const s = await setup();
@@ -207,13 +222,15 @@ describe('group access and board scope', () => {
         sync.mockResolvedValueOnce({ state, checkedSince: s.now() });
         const input = { period: 'all', groupId: -100 } as const;
         const board =
-          game === 'flappy'
-            ? await s.flappy.leaderboard(s.player, input)
-            : game === '2048'
-              ? await s.puzzle.leaderboard(s.player, input)
-              : game === 'snake'
-                ? await s.snake.leaderboard(s.player, { size: 16, ...input })
-                : await s.minesweeper.leaderboard(s.player, { size: '9x9', ...input });
+          game === 'block-blast'
+            ? await s.blockBlast.leaderboard(s.player, input)
+            : game === 'flappy'
+              ? await s.flappy.leaderboard(s.player, input)
+              : game === '2048'
+                ? await s.puzzle.leaderboard(s.player, input)
+                : game === 'snake'
+                  ? await s.snake.leaderboard(s.player, { size: 16, ...input })
+                  : await s.minesweeper.leaderboard(s.player, { size: '9x9', ...input });
         expect(board.membershipSync).toBe(state);
       }
     },
@@ -1290,6 +1307,17 @@ describe('native private game commands', () => {
     message_id: 0,
     ephemeral_message_id: 7,
   };
+  it('registers a valid Block Blast command and opens its direct game link', async () => {
+    const s = await setup();
+    await s.bot.message({ ...payload, text: '/game_block_blast@arcade_bot' });
+    expect(s.sent[0]?.reply_markup?.inline_keyboard[0]?.[0]).toEqual({
+      text: 'Играть',
+      url: 'https://t.me/arcade_bot?startapp=game_block-blast',
+    });
+    await s.bot.configure();
+    expect(s.commands[0]?.commands.some((c) => c.command === 'game_block_blast')).toBe(true);
+    expect(s.commands[0]?.commands.every((c) => /^[a-z0-9_]{1,32}$/.test(c.command))).toBe(true);
+  });
   it('opens Minesweeper directly and registers its game command', async () => {
     const s = await setup();
     await s.bot.message({ ...payload, text: '/game_minesweeper@arcade_bot' });
@@ -1854,6 +1882,239 @@ describe('Flappy Bird record announcements', () => {
     };
     await expect(s.maintenance.flappyResult(winner)).rejects.toMatchObject({ code: 'UNAVAILABLE' });
     expect((await s.flappyRepository.get(winner.id))?.socialProcessed).toBe(false);
+    s.telegram.member = member;
+    for (let i = 0; i < 5; i++) await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+  });
+});
+
+async function blockBlastResult(
+  s: Awaited<ReturnType<typeof setup>>,
+  id: string,
+  playerId: number,
+  score: number,
+) {
+  const created = await s.blockBlast.create(
+    { id: playerId, name: `P${playerId}` },
+    { requestId: `blockBlast_fixture_${id}` },
+  );
+  const original = await s.blockBlastRepository.get(created.id);
+  if (!original) throw new Error('Missing blockBlast fixture');
+  await s.blockBlastRepository.save(
+    {
+      ...original,
+      revision: 1,
+      status: 'verified',
+      state: { ...original.state, score, status: 'over' },
+      verifiedAt: s.now(),
+    },
+    0,
+  );
+  const stored = await s.blockBlastRepository.get(created.id);
+  if (!stored) throw new Error('Missing blockBlast result');
+  return stored;
+}
+
+describe('Block Blast record announcements', () => {
+  it('discovers an actual verified game from the persistent queue and ignores unfinished games', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const run = await s.blockBlast.create(s.player, { requestId: 'block-real-replay-001' });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    const state = structuredClone(run.state);
+    const piece = state.tray[0];
+    if (piece === null || piece === undefined) throw new Error('Missing piece');
+    const position = blockPlacements(state.board, piece)[0];
+    if (!position) throw new Error('Missing placement');
+    const move = { slot: 0, ...position };
+    moveBlockBlast(state, move);
+    const input = { runId: run.id, revision: 0, moves: [move], finish: true };
+    const result = await s.blockBlast.submit(s.player, input);
+    expect(await s.blockBlast.submit(s.player, input)).toEqual(result);
+    expect((await s.blockBlastRepository.pendingResults(3)).map((r) => r.id)).toEqual([run.id]);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain(`Block Blast · ${state.score} очков`);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+  });
+  it('announces the first score once and links back to Block Blast', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const run = await blockBlastResult(s, 'first', 1, 10);
+    await s.maintenance.blockBlastResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('Block Blast · 10 очков');
+    expect(s.sent[0]?.reply_markup?.inline_keyboard[0]?.[0]).toEqual({
+      text: '🎮 Побить рекорд',
+      url: 'https://t.me/arcade_bot?startapp=game_block-blast',
+    });
+    await s.maintenance.blockBlastResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(await s.blockBlastRepository.pendingResults(3)).toEqual([]);
+  });
+  it('compares only group members, announces an overtake and a leader improvement', async () => {
+    const s = await setup();
+    await blockBlastResult(s, 'rival', 2, 100);
+    await blockBlastResult(s, 'outsider', 3, 1000);
+    s.members.set(3, { active: false, admin: false });
+    await s.repository.observeMember({
+      chatId: -100,
+      userId: 3,
+      active: false,
+      updatedAt: s.now(),
+    });
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const run = await blockBlastResult(s, 'winner', 1, 200);
+    await s.maintenance.blockBlastResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('Обошёл(ла) P2: больше на 100 очков');
+    expect((await s.blockBlast.leaderboard(s.player, { period: 'all' })).me?.rank).toBe(2);
+    s.advance(300001);
+    await s.maintenance.blockBlastResult(await blockBlastResult(s, 'improved', 1, 300));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(2);
+    expect(s.sent[1]?.text).toContain('Улучшен рекорд группы: больше на 100 очков');
+  });
+  it('ignores zero scores, same-place personal improvements, ties and results before enabling', async () => {
+    const s = await setup();
+    await blockBlastResult(s, 'leader', 2, 1000);
+    await blockBlastResult(s, 'second', 1, 100);
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    await s.maintenance.blockBlastResult(await blockBlastResult(s, 'personal', 1, 200));
+    await s.maintenance.blockBlastResult(await blockBlastResult(s, 'tie', 2, 1000));
+    await s.maintenance.blockBlastResult(await blockBlastResult(s, 'zero', 3, 0));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+  });
+  it('shares the cross-game cooldown and delivers a deferred record after five minutes', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.mineResult(await mineResult(s, 'before-blockBlast', 1, 10000));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    const run = await blockBlastResult(s, 'cooldown', 1, 100);
+    await s.maintenance.blockBlastResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(
+      await s.local.db.get('SELECT status,error FROM social_jobs WHERE id=:id', {
+        ':id': `record:${run.id}:-100`,
+      }),
+    ).toEqual({ status: 'pending', error: 'Group cooldown' });
+    s.advance(300001);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(2);
+    expect(s.sent[1]?.text).toContain('Block Blast');
+  });
+  it('orders snapshots by completion and suppresses superseded records before sending', async () => {
+    const s = await setup();
+    const early = await s.blockBlast.create(s.player, { requestId: 'blockBlast_early_12345678' });
+    await blockBlastResult(s, 'later-start', 2, 100);
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const original = await s.blockBlastRepository.get(early.id);
+    if (!original) throw new Error('Missing fixture');
+    await s.blockBlastRepository.save(
+      {
+        ...original,
+        revision: 1,
+        status: 'verified',
+        state: { ...original.state, score: 200, status: 'over' },
+        verifiedAt: s.now(),
+      },
+      0,
+    );
+    const a = await s.blockBlastRepository.get(early.id);
+    if (!a) throw new Error('Missing result');
+    expect(a.verifiedOrder).toBe(2);
+    const before = await s.blockBlastRepository.leaderboard(s.player, 'all', 0, {
+      groupId: -100,
+      maxResultOrder: 1,
+    });
+    expect(before.me).toBeNull();
+    expect(before.entries[0]?.playerId).toBe(2);
+    await s.maintenance.blockBlastResult(a);
+    await s.maintenance.blockBlastResult(await blockBlastResult(s, 'new-winner', 3, 300));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('P3');
+  });
+  it('retries Telegram errors and suppresses delivery after a player leaves or notifications are disabled', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.blockBlastResult(await blockBlastResult(s, 'retry', 1, 100));
+    const send = s.telegram.send;
+    s.telegram.send = vi
+      .fn()
+      .mockRejectedValueOnce({ code: 429, parameters: { retry_after: 2 } })
+      .mockImplementation(send);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    s.advance(2100);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    s.advance(300001);
+    await s.maintenance.blockBlastResult(await blockBlastResult(s, 'left', 1, 200));
+    s.members.set(1, { active: false, admin: false });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    s.members.set(1, { active: true, admin: true });
+    await s.maintenance.blockBlastResult(await blockBlastResult(s, 'off', 1, 300));
+    await s.groups.configure(s.player, { groupId: -100, enabled: false });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+  });
+  it('discovers blockBlast-only players in new groups without broadcasting old records', async () => {
+    const s = await setup();
+    await blockBlastResult(s, 'history', 2, 100);
+    await s.repository.upsertGroup({
+      id: -200,
+      title: 'Новая группа',
+      active: true,
+      botAdmin: true,
+    });
+    expect(await s.repository.membersToRefresh(-200, s.now() - 1000, 25)).toContain(2);
+    await s.groups.synchronize(-200);
+    expect(
+      (await s.blockBlastRepository.leaderboard(s.player, 'all', 0, { groupId: -200 })).entries[0]
+        ?.playerId,
+    ).toBe(2);
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -200, enabled: true });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+  });
+  it('defers incomplete membership verification and excludes records below the group top ten', async () => {
+    const s = await setup();
+    for (let id = 2; id <= 12; id++) {
+      s.members.set(id, { active: true, admin: false });
+      await blockBlastResult(s, `rival-${id}`, id, id * 10);
+    }
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.blockBlastResult(await blockBlastResult(s, 'outside-top', 1, 10));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    const winner = await blockBlastResult(s, 'after-outage', 1, 500);
+    s.advance(16 * 60000);
+    const member = s.telegram.member;
+    s.telegram.member = async (chat, id) => {
+      if (id === 2) throw new Error('Telegram outage');
+      return member(chat, id);
+    };
+    await expect(s.maintenance.blockBlastResult(winner)).rejects.toMatchObject({
+      code: 'UNAVAILABLE',
+    });
+    expect((await s.blockBlastRepository.get(winner.id))?.socialProcessed).toBe(false);
     s.telegram.member = member;
     for (let i = 0; i < 5; i++) await s.maintenance.sweep();
     expect(s.sent).toHaveLength(1);

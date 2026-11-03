@@ -6,6 +6,7 @@ import { LEGACY_2048_RULESET } from '../src/games/2048/engine.ts';
 import { Service2048 } from '../src/server/domain/2048.ts';
 import { isAdmin } from '../src/server/domain/admin.ts';
 import { ArcadeService } from '../src/server/domain/arcade.ts';
+import { BlockService } from '../src/server/domain/block-blast.ts';
 import { FlappyService } from '../src/server/domain/flappy.ts';
 import { GroupService } from '../src/server/domain/groups.ts';
 import { MaintenanceService } from '../src/server/domain/maintenance.ts';
@@ -18,6 +19,7 @@ import {
   SOCIAL_2048_INDEXES,
 } from '../src/server/platform/2048-ddl.ts';
 import { installAdmin } from '../src/server/platform/admin-ddl.ts';
+import { BLOCK_BLAST_DDL } from '../src/server/platform/block-blast-ddl.ts';
 import {
   FLAPPY_DDL,
   FLAPPY_SOCIAL_COLUMNS,
@@ -37,6 +39,7 @@ import {
 } from '../src/server/platform/social-ddl.ts';
 import { Sql2048Repository } from '../src/server/platform/sql-2048.ts';
 import { SqlAdminRepository } from '../src/server/platform/sql-admin.ts';
+import { SqlBlockRepository } from '../src/server/platform/sql-block-blast.ts';
 import { SqlFlappyRepository } from '../src/server/platform/sql-flappy.ts';
 import { SqlMineRepository } from '../src/server/platform/sql-minesweeper.ts';
 import { SqlArcadeRepository, type SqlDatabase } from '../src/server/platform/sql-repository.ts';
@@ -71,6 +74,7 @@ export function localRepository(file = ':memory:') {
       database.exec(`ALTER TABLE groups ADD COLUMN ${name} ${definition}`);
   database.exec(MANUAL_RESULTS_DDL);
   database.exec(MINESWEEPER_DDL);
+  database.exec(BLOCK_BLAST_DDL);
   database.exec(FLAPPY_DDL);
   const flappyColumns = database.prepare('PRAGMA table_info(flappy_runs)').all();
   for (const [name, definition] of Object.entries(FLAPPY_SOCIAL_COLUMNS))
@@ -138,9 +142,15 @@ export function createLocalApi(file: string, ownerPreview = false) {
   const social = new SqlSocialRepository(local.db, local.repository);
   const mineRepository = new SqlMineRepository(local.db);
   const puzzle2048Repository = new Sql2048Repository(local.db);
+  const blockBlastRepository = new SqlBlockRepository(local.db);
   const flappyRepository = new SqlFlappyRepository(local.db);
   const snakeRepository = new SqlSnakeRepository(local.db);
   const groups = new GroupService(social, telegram, () => Date.now());
+  const blockBlast = new BlockService(
+    blockBlastRepository,
+    { now: () => Date.now(), seed: () => Math.floor(Math.random() * 0x100000000) },
+    groups,
+  );
   const maintenance = new MaintenanceService(
     social,
     local.repository,
@@ -151,6 +161,7 @@ export function createLocalApi(file: string, ownerPreview = false) {
     puzzle2048Repository,
     snakeRepository,
     flappyRepository,
+    blockBlastRepository,
   );
   const ready = (async () => {
     await adminReady;
@@ -269,6 +280,33 @@ export function createLocalApi(file: string, ownerPreview = false) {
             break;
           case 'getFlappyLeaderboard':
             result = await flappy.leaderboard(player, input);
+            await flushNotifications();
+            break;
+          case 'createBlockRun':
+            result = await blockBlast.create(player, input);
+            await flushNotifications();
+            break;
+          case 'getBlockRun':
+            result = await blockBlast.get(player, input);
+            await flushNotifications();
+            break;
+          case 'submitBlockMoves':
+            {
+              const outcome = await blockBlast.submit(player, input);
+              result = outcome;
+              if (outcome.status === 'verified') {
+                try {
+                  const run = await blockBlastRepository.get(outcome.id);
+                  if (run) await maintenance.blockBlastResult(run);
+                } catch {
+                  /* Retry notification generation independently from saving results. */
+                }
+              }
+              await flushNotifications();
+            }
+            break;
+          case 'getBlockLeaderboard':
+            result = await blockBlast.leaderboard(player, input);
             await flushNotifications();
             break;
           case 'createSnakeRun':

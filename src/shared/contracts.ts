@@ -10,6 +10,7 @@ import type {
   AdminStats,
   AdminTable,
 } from './admin.ts';
+import type { BlockBoard, BlockMoves, BlockRun } from './block-blast.ts';
 import type { FlappyBoard, FlappyReplay, FlappyRun } from './flappy.ts';
 import type { GroupView } from './groups.ts';
 import type { MineLeaderboard, MineResult, MineResultInput } from './minesweeper.ts';
@@ -19,7 +20,7 @@ export interface Player {
   name: string;
 }
 export interface GameInfo {
-  id: 'tetris' | 'minesweeper' | '2048' | 'snake' | 'flappy' | 'mario' | 'doom';
+  id: 'tetris' | 'minesweeper' | '2048' | 'snake' | 'flappy' | 'block-blast' | 'mario' | 'doom';
   title: string;
   subtitle: string;
   available: boolean;
@@ -51,6 +52,13 @@ export const CATALOG: readonly GameInfo[] = [
     id: 'snake',
     title: 'Змейка',
     subtitle: 'Собирай яблоки · выбирай размер поля',
+    available: true,
+    ranked: true,
+  },
+  {
+    id: 'block-blast',
+    title: 'Block Blast',
+    subtitle: 'Три фигуры · собирай линии · освобождай поле',
     available: true,
     ranked: true,
   },
@@ -100,6 +108,10 @@ export interface LeaderboardView {
   me: LeaderboardEntry | null;
 }
 export interface Endpoints {
+  createBlockRun: { input: { requestId: string }; output: BlockRun };
+  getBlockRun: { input: { runId: string }; output: BlockRun };
+  submitBlockMoves: { input: BlockMoves; output: BlockRun };
+  getBlockLeaderboard: { input: { period: Period; groupId?: number }; output: BlockBoard };
   getAdminStats: { input: { weeks?: number }; output: AdminStats };
   getAdminRows: { input: { table: AdminTable; page: number; search: string }; output: AdminPage };
   previewAdminAction: { input: { action: AdminAction; target: string }; output: AdminPreview };

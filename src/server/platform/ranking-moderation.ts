@@ -12,6 +12,7 @@ const RANKED_TABLES = [
   ['runs', 'verified'],
   ['snake_runs', 'verified'],
   ['flappy_runs', 'verified'],
+  ['block_blast_runs', 'verified'],
   ['manual_results', null],
 ] as const;
 

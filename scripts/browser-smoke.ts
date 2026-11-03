@@ -82,6 +82,7 @@ try {
     'Сапёр',
     '2048',
     'Змейка',
+    'Block Blast',
     'Flappy Bird',
   ]);
   assert.doesNotMatch((await page.locator('body').textContent()) ?? '', /doom|mario|дум|марио/i);
@@ -518,6 +519,7 @@ try {
       ['minesweeper', 'getMineLeaderboard'],
       ['2048', 'get2048Leaderboard'],
       ['snake', 'getSnakeLeaderboard'],
+      ['block-blast', 'getBlockLeaderboard'],
       ['tetris', 'getLeaderboard'],
     ] as const) {
       const response = page.waitForResponse(

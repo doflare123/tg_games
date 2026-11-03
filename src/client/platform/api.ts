@@ -2,6 +2,7 @@ import { RULESET_2048, type Ruleset2048 } from '../../games/2048/engine.ts';
 import type { TetrisMode } from '../../games/tetris/types.ts';
 import { decodeBoard2048, decodeRun2048 } from '../../shared/2048.ts';
 import { decodeAdminPage, decodeAdminPreview, decodeAdminStats } from '../../shared/admin.ts';
+import { decodeBlockBoard, decodeBlockRun } from '../../shared/block-blast.ts';
 import type { EndpointInput, EndpointName, Player, ReplayInput } from '../../shared/contracts.ts';
 import { AppError, integer, object, oneOf, text } from '../../shared/errors.ts';
 import { decodeFlappyBoard, decodeFlappyRun } from '../../shared/flappy.ts';
@@ -64,6 +65,20 @@ async function call<K extends EndpointName>(name: K, input: EndpointInput<K>): P
   throw new AppError('UNAUTHORIZED', 'Рейтинговая игра доступна внутри Telegram');
 }
 export const api = {
+  async createBlock(requestId: string) {
+    return decodeBlockRun(await call('createBlockRun', { requestId }));
+  },
+  async getBlock(runId: string) {
+    return decodeBlockRun(await call('getBlockRun', { runId }));
+  },
+  async submitBlock(input: EndpointInput<'submitBlockMoves'>) {
+    return decodeBlockRun(await call('submitBlockMoves', input));
+  },
+  async blockBlastLeaderboard(period: 'all' | 'week', groupId?: number) {
+    return decodeBlockBoard(
+      await call('getBlockLeaderboard', { period, ...(groupId === undefined ? {} : { groupId }) }),
+    );
+  },
   async adminStats(weeks = 8) {
     return decodeAdminStats(await call('getAdminStats', { weeks }));
   },

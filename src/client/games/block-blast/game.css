@@ -1,0 +1,219 @@
+.block-blast {
+  width: min(100%, 520px);
+  margin: 0 auto;
+  padding: 8px 12px 28px;
+}
+.blast-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.blast-toolbar .button {
+  padding: 12px 14px;
+}
+.blast-mode {
+  color: var(--green);
+  font:
+    12px ui-monospace,
+    monospace;
+  min-height: 1.5em;
+}
+.blast-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin: 16px 0;
+}
+.blast-stats strong {
+  font-size: clamp(24px, 6vw, 36px);
+}
+.blast-stats > span {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: right;
+}
+.blast-board {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 3px;
+  padding: 8px;
+  background: #272e2c;
+  border-radius: 10px;
+  touch-action: none;
+  user-select: none;
+}
+.blast-cell {
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  aspect-ratio: 1;
+  min-width: 0;
+  background: #343f3d;
+  cursor: pointer;
+  opacity: 1;
+}
+.blast-cell:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: -3px;
+}
+.blast-cell[data-color="1"],
+.blast-mini [data-color="1"] {
+  background: #a4c981;
+}
+.blast-cell[data-color="2"],
+.blast-mini [data-color="2"] {
+  background: #c1a5df;
+}
+.blast-cell[data-color="3"],
+.blast-mini [data-color="3"] {
+  background: #f4c775;
+}
+.blast-cell[data-color="4"],
+.blast-mini [data-color="4"] {
+  background: #d18762;
+}
+.blast-cell[data-color="5"],
+.blast-mini [data-color="5"] {
+  background: #7dc3c6;
+}
+.blast-cell[data-color="6"],
+.blast-mini [data-color="6"] {
+  background: #db99ad;
+}
+.blast-cell:not([data-color="0"]) {
+  box-shadow:
+    inset 0 2px 0 #ffffff35,
+    inset 0 -3px 0 #00000025;
+}
+.blast-cell.blast-preview {
+  background: #b9d993;
+  outline: 2px solid #eaffda;
+  outline-offset: -2px;
+}
+.blast-cell.blast-invalid {
+  background: #a65555;
+  outline: 2px dashed #f4b9aa;
+  outline-offset: -2px;
+}
+.blast-cell.blast-clear-preview {
+  box-shadow: inset 0 0 0 2px #fff2b2;
+}
+.blast-tray {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 16px 0 0;
+}
+.blast-piece {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 110px;
+  min-width: 0;
+  padding: 12px 4px 24px;
+  border: 1px solid #59644c;
+  border-radius: 8px;
+  background: #272e2c;
+  color: var(--muted);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.blast-piece.selected {
+  border-color: #c9e4a1;
+  box-shadow: inset 0 0 0 1px #c9e4a1;
+  background: #343d2f;
+}
+.blast-piece.unavailable {
+  border-style: dashed;
+}
+.blast-piece:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.blast-mini {
+  display: grid;
+  gap: 2px;
+  pointer-events: none;
+}
+.blast-drag-ghost {
+  position: fixed;
+  z-index: 20;
+  display: grid;
+  gap: 3px;
+  pointer-events: none;
+  opacity: 0.8;
+  filter: drop-shadow(0 5px 5px #0008);
+}
+.blast-drag-ghost[hidden] {
+  display: none;
+}
+.blast-drag-ghost i {
+  border-radius: 3px;
+  background: #c9e4a1;
+  box-shadow:
+    inset 0 2px 0 #ffffff35,
+    inset 0 -3px 0 #00000025;
+}
+.blast-mini i {
+  border-radius: 2px;
+  box-shadow:
+    inset 0 2px 0 #ffffff35,
+    inset 0 -2px 0 #00000025;
+}
+.blast-slot-label {
+  position: absolute;
+  bottom: 7px;
+  font:
+    11px ui-monospace,
+    monospace;
+}
+.blast-status {
+  color: var(--green);
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 3em;
+  margin: 12px 0 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .blast-celebrate {
+    animation: blast-flash 350ms ease-out;
+  }
+  @keyframes blast-flash {
+    0% {
+      box-shadow: 0 0 0 4px #f4c775;
+    }
+    100% {
+      box-shadow: 0 0 0 0 transparent;
+    }
+  }
+}
+.block-blast-preview {
+  background: #313d36;
+  display: grid;
+  place-items: center;
+}
+.blast-catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 4px;
+  width: 72%;
+  aspect-ratio: 1;
+  transform: rotate(-7deg);
+}
+.blast-catalog-grid i {
+  background: #ffffff0a;
+  border-radius: 2px;
+}
+.blast-catalog-grid i.filled {
+  background: #a4c981;
+  box-shadow: inset 0 -3px 0 #00000020;
+}
+.blast-catalog-grid i:nth-child(3n).filled {
+  background: #c1a5df;
+}
+.blast-catalog-grid i:nth-child(5n).filled {
+  background: #f4c775;
+}

@@ -48,6 +48,35 @@ export const rankingBlocks = table('ranking_blocks', {
   reason: text('reason').notNull(),
   createdAt: integer('created_at').notNull(),
 });
+export const blockBlastRuns = table(
+  'block_blast_runs',
+  {
+    id: text('id').primaryKey(),
+    playerId: integer('player_id').notNull(),
+    playerName: text('player_name').notNull(),
+    ruleset: text('ruleset').notNull(),
+    revision: integer('revision').notNull(),
+    stateJson: text('state_json').notNull(),
+    status: text('status').notNull(),
+    score: integer('score').notNull(),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    lastSubmission: text('last_submission'),
+    verifiedAt: integer('verified_at').notNull().default(0),
+    verifiedOrder: integer('verified_order').notNull().default(0),
+    socialProcessed: integer('social_processed').notNull().default(1),
+  },
+  (t) => ({
+    leaderboard: index('block_blast_leaderboard').on(t.ruleset, t.status, t.score, t.createdAt),
+    recent: index('block_blast_recent').on(t.playerId, t.createdAt),
+    verifiedOrder: index('block_blast_verified_order').on(t.verifiedOrder),
+    pendingSocial: index('block_blast_pending_social').on(
+      t.status,
+      t.socialProcessed,
+      t.verifiedOrder,
+    ),
+  }),
+);
 export const flappyRuns = table(
   'flappy_runs',
   {

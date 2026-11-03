@@ -81,6 +81,7 @@ it('blocks inserts and updates across all games, including manual corrections an
     ['minesweeper_runs', 'won'],
     ['runs', 'verified'],
     ['snake_runs', 'verified'],
+    ['block_blast_runs', 'verified'],
     ['manual_results', null],
   ] as const;
   // Seed complete SQL rows to exercise the database boundary independently of services.

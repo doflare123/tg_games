@@ -3,6 +3,7 @@ import type { Player } from '../../shared/contracts.ts';
 import { AppError } from '../../shared/errors.ts';
 import { Service2048 } from '../domain/2048.ts';
 import { ArcadeService } from '../domain/arcade.ts';
+import { BlockService } from '../domain/block-blast.ts';
 import { GameBotService } from '../domain/bot.ts';
 import { FlappyService } from '../domain/flappy.ts';
 import { GroupService } from '../domain/groups.ts';
@@ -13,6 +14,7 @@ import { verifiedPlayer } from './context.ts';
 import { MINI_APP_URL } from './mini-app-config.ts';
 import { Sql2048Repository } from './sql-2048.ts';
 import { SqlAdminRepository } from './sql-admin.ts';
+import { SqlBlockRepository } from './sql-block-blast.ts';
 import { SqlFlappyRepository } from './sql-flappy.ts';
 import { SqlMineRepository } from './sql-minesweeper.ts';
 import { SqlArcadeRepository } from './sql-repository.ts';
@@ -47,6 +49,12 @@ export const puzzle2048 = new Service2048(
   },
   groups,
 );
+export const blockBlastRepository = new SqlBlockRepository(db);
+export const blockBlast = new BlockService(
+  blockBlastRepository,
+  { now: () => Date.now(), seed: () => Math.floor(Math.random() * 0x100000000) },
+  groups,
+);
 export const mineRepository = new SqlMineRepository(db);
 export const minesweeper = new MinesweeperService(
   mineRepository,
@@ -65,6 +73,7 @@ export const maintenance = new MaintenanceService(
   puzzle2048Repository,
   snakeRepository,
   flappyRepository,
+  blockBlastRepository,
 );
 export async function flushNotifications(): Promise<void> {
   try {

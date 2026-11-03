@@ -5,6 +5,7 @@ export const ADMIN_RUNS = [
   ['puzzle2048_runs', '2048', 'created_at', 'verified'],
   ['snake_runs', 'snake', 'created_at', 'verified'],
   ['flappy_runs', 'flappy', 'created_at', 'verified'],
+  ['block_blast_runs', 'block-blast', 'created_at', 'verified'],
   ['minesweeper_runs', 'minesweeper', 'started_at', 'won'],
 ] as const;
 // Manual corrections are deliberately excluded from played-game metrics.
@@ -52,6 +53,11 @@ export const ADMIN_VIEWS: Record<AdminTable, TableDefinition> = {
   snake_runs: {
     source: 'snake_runs',
     columns: [...runColumns, 'size'],
+    order: 'created_at DESC,id',
+  },
+  block_blast_runs: {
+    source: 'block_blast_runs',
+    columns: runColumns,
     order: 'created_at DESC,id',
   },
   flappy_runs: { source: 'flappy_runs', columns: runColumns, order: 'created_at DESC,id' },
@@ -178,6 +184,7 @@ export const ADMIN_OPERATIONS: Record<AdminAction, ActionDefinition> = {
   revoke_2048: revoke('puzzle2048_runs', '2048', 'verified'),
   revoke_snake: revoke('snake_runs', 'snake', 'verified'),
   revoke_flappy: revoke('flappy_runs', 'flappy', 'verified'),
+  revoke_block_blast: revoke('block_blast_runs', 'block-blast', 'verified'),
   revoke_minesweeper: revoke('minesweeper_runs', 'minesweeper', 'won'),
   remove_manual: {
     table: 'manual_results',

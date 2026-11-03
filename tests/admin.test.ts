@@ -218,6 +218,7 @@ it('revokes every game without deleting attempts, suppresses its jobs and preser
     ['puzzle2048_runs', 'revoke_2048', '2048', 'verified'],
     ['snake_runs', 'revoke_snake', 'snake', 'verified'],
     ['flappy_runs', 'revoke_flappy', 'flappy', 'verified'],
+    ['block_blast_runs', 'revoke_block_blast', 'block-blast', 'verified'],
     ['minesweeper_runs', 'revoke_minesweeper', 'minesweeper', 'won'],
     ['manual_results', 'remove_manual', 'tetris', null],
   ] as const;
@@ -254,7 +255,9 @@ it('revokes every game without deleting attempts, suppresses its jobs and preser
     if (status) expect(await db.get(`SELECT status FROM ${table}`)).toEqual({ status: 'unranked' });
     await expect(admin.preview(owner, { action, target: table })).rejects.toThrow();
   }
-  expect(await db.get('SELECT count(*) AS total FROM admin_audit')).toEqual({ total: 6 });
+  expect(await db.get('SELECT count(*) AS total FROM admin_audit')).toEqual({
+    total: games.length,
+  });
 });
 it('keeps revoked verified replay attempts terminal and out of leaderboards', async () => {
   const { admin, db, now } = await setup();

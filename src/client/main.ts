@@ -3,6 +3,7 @@ import { createSnake } from '../games/snake/engine.ts';
 import { snakeRenderer } from './games/snake/renderer.ts';
 import './games/snake/snake.css';
 import './games/flappy/flappy.css';
+import './games/block-blast/game.css';
 import { type LaunchTarget, parseLaunch } from '../shared/launch.ts';
 import { mountLeaderboard } from './ui/leaderboard.ts';
 import './styles.css';
@@ -77,7 +78,15 @@ function tabs(board: boolean): void {
 function preview(game: GameInfo): HTMLElement {
   const visual = element('div', `game-preview ${game.id}-preview`);
   visual.setAttribute('aria-hidden', 'true');
-  if (game.id === 'flappy') {
+  if (game.id === 'block-blast') {
+    const blocks = element('div', 'blast-catalog-grid');
+    const occupied = new Set([
+      0, 1, 8, 9, 16, 17, 22, 23, 30, 31, 38, 39, 42, 43, 44, 48, 49, 50, 51, 52, 56, 57, 58, 59,
+      60, 61, 62,
+    ]);
+    for (let i = 0; i < 64; i++) blocks.append(element('i', occupied.has(i) ? 'filled' : ''));
+    visual.append(blocks, element('span', 'preview-watermark', 'THREE PIECES / ONE PLAN'));
+  } else if (game.id === 'flappy') {
     visual.append(element('span', 'preview-watermark', 'ONE MORE FLIGHT'));
   } else if (game.id === 'snake') {
     const canvas = element('canvas');
@@ -188,7 +197,7 @@ function renderCatalog(): void {
     element(
       'p',
       'hero-description',
-      'Тетрис, Сапёр, 2048, Змейка и Flappy Bird.\nВыбирай игру и вырасти свой рекорд.',
+      'Тетрис, Сапёр, 2048, Змейка, Block Blast и Flappy Bird.\nВыбирай игру и вырасти свой рекорд.',
     ),
   );
   const actions = element('div', 'hero-actions');
@@ -404,30 +413,35 @@ async function mountGamePage(
   try {
     const host = { container: body, onClose: close };
     const mount =
-      game.id === 'flappy'
+      game.id === 'block-blast'
         ? (host: { container: HTMLElement; onClose(): void }) =>
-            import('./games/flappy/controller.ts').then((module) => module.mountFlappy(host))
-        : game.id === 'tetris'
+            import('./games/block-blast/controller.ts').then((module) =>
+              module.mountBlockBlast(host),
+            )
+        : game.id === 'flappy'
           ? (host: { container: HTMLElement; onClose(): void }) =>
-              import('./games/tetris/controller.ts').then((module) =>
-                module.mountTetris(host, initialMode),
-              )
-          : game.id === 'snake'
+              import('./games/flappy/controller.ts').then((module) => module.mountFlappy(host))
+          : game.id === 'tetris'
             ? (host: { container: HTMLElement; onClose(): void }) =>
-                import('./games/snake/controller.ts').then((module) =>
-                  module.mountSnake(host, initialSnakeSize),
+                import('./games/tetris/controller.ts').then((module) =>
+                  module.mountTetris(host, initialMode),
                 )
-            : game.id === '2048'
+            : game.id === 'snake'
               ? (host: { container: HTMLElement; onClose(): void }) =>
-                  import('./games/2048/controller.ts').then((module) => module.mount2048(host))
-              : game.id === 'minesweeper'
+                  import('./games/snake/controller.ts').then((module) =>
+                    module.mountSnake(host, initialSnakeSize),
+                  )
+              : game.id === '2048'
                 ? (host: { container: HTMLElement; onClose(): void }) =>
-                    import('./games/minesweeper/controller.ts').then((module) =>
-                      module.mountMinesweeper(host, initialSize),
-                    )
-                : game.id === 'mario'
-                  ? (await import('./games/mario/adapter.ts')).mountMario
-                  : (await import('./games/doom/adapter.ts')).mountDoom;
+                    import('./games/2048/controller.ts').then((module) => module.mount2048(host))
+                : game.id === 'minesweeper'
+                  ? (host: { container: HTMLElement; onClose(): void }) =>
+                      import('./games/minesweeper/controller.ts').then((module) =>
+                        module.mountMinesweeper(host, initialSize),
+                      )
+                  : game.id === 'mario'
+                    ? (await import('./games/mario/adapter.ts')).mountMario
+                    : (await import('./games/doom/adapter.ts')).mountDoom;
     if (closed) return;
     body.replaceChildren();
     adapter = await mount(host);

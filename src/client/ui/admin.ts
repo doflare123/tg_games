@@ -18,6 +18,7 @@ const TABLE_NAMES: Record<AdminTable, string> = {
   puzzle2048_runs: '2048 — партии',
   snake_runs: 'Змейка — партии',
   flappy_runs: 'Flappy Bird — партии',
+  block_blast_runs: 'Block Blast — партии',
   minesweeper_runs: 'Сапёр — результаты',
   manual_results: 'Ручные исправления',
   group_memberships: 'Участие в группах',
@@ -36,6 +37,7 @@ const ACTION_NAMES: Record<AdminAction, string> = {
   revoke_2048: 'Снять результат',
   revoke_snake: 'Снять результат',
   revoke_flappy: 'Снять результат',
+  revoke_block_blast: 'Снять результат',
   revoke_minesweeper: 'Снять результат',
   remove_manual: 'Удалить ручное исправление',
 };
@@ -52,6 +54,7 @@ const GAME_NAMES: Record<string, string> = {
   '2048': '2048',
   snake: 'Змейка',
   flappy: 'Flappy Bird',
+  'block-blast': 'Block Blast',
   minesweeper: 'Сапёр',
 };
 function delta(current: number, previous: number): string {
@@ -241,6 +244,7 @@ function rowActions(table: AdminTable, row: Record<string, AdminCell>): AdminAct
       puzzle2048_runs: 'revoke_2048',
       snake_runs: 'revoke_snake',
       flappy_runs: 'revoke_flappy',
+      block_blast_runs: 'revoke_block_blast',
       minesweeper_runs: 'revoke_minesweeper',
     };
     const action = actions[table];

@@ -7,6 +7,7 @@ export const ADMIN_TABLES = [
   'puzzle2048_runs',
   'snake_runs',
   'flappy_runs',
+  'block_blast_runs',
   'minesweeper_runs',
   'manual_results',
   'group_memberships',
@@ -26,6 +27,7 @@ export const ADMIN_ACTIONS = [
   'revoke_2048',
   'revoke_snake',
   'revoke_flappy',
+  'revoke_block_blast',
   'revoke_minesweeper',
   'remove_manual',
 ] as const;

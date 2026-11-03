@@ -1,3 +1,4 @@
+import { BLOCK_SHAPES } from '../games/block-blast/engine.ts';
 import type { MineSize } from '../games/minesweeper/engine.ts';
 import { createSnake } from '../games/snake/engine.ts';
 import { snakeRenderer } from './games/snake/renderer.ts';
@@ -80,12 +81,53 @@ function preview(game: GameInfo): HTMLElement {
   visual.setAttribute('aria-hidden', 'true');
   if (game.id === 'block-blast') {
     const blocks = element('div', 'blast-catalog-grid');
-    const occupied = new Set([
-      0, 1, 8, 9, 16, 17, 22, 23, 30, 31, 38, 39, 42, 43, 44, 48, 49, 50, 51, 52, 56, 57, 58, 59,
-      60, 61, 62,
+    const occupied = new Map<number, number>([
+      [18, 1],
+      [32, 2],
+      [33, 2],
+      [35, 1],
+      [36, 1],
+      [37, 1],
+      [38, 1],
+      [39, 1],
+      [40, 2],
+      [41, 2],
+      [42, 2],
+      [43, 2],
+      [44, 1],
+      [49, 2],
+      [50, 2],
+      [51, 2],
+      [52, 2],
+      [59, 2],
+      [60, 2],
+      [61, 2],
+      [62, 1],
     ]);
-    for (let i = 0; i < 64; i++) blocks.append(element('i', occupied.has(i) ? 'filled' : ''));
-    visual.append(blocks, element('span', 'preview-watermark', 'THREE PIECES / ONE PLAN'));
+    for (let i = 0; i < 64; i++) {
+      const cell = element('i', 'blast-cell');
+      cell.dataset.color = String(occupied.get(i) ?? 0);
+      blocks.append(cell);
+    }
+    const figures = element('div', 'blast-catalog-figures');
+    for (const [index, piece] of [20, 9, 3].entries()) {
+      const shape = BLOCK_SHAPES[piece];
+      if (!shape) continue;
+      const mini = element('span', 'blast-mini');
+      mini.style.gridTemplateColumns = `repeat(${shape.width}, 1fr)`;
+      mini.style.gridTemplateRows = `repeat(${shape.height}, 1fr)`;
+      mini.style.width = `${shape.width * 17}px`;
+      mini.style.height = `${shape.height * 17}px`;
+      for (const cell of shape.cells) {
+        const block = element('i');
+        block.dataset.color = String(index + 1);
+        block.style.gridColumn = String(cell.x + 1);
+        block.style.gridRow = String(cell.y + 1);
+        mini.append(block);
+      }
+      figures.append(mini);
+    }
+    visual.append(blocks, figures, element('span', 'preview-watermark', 'THREE PIECES / ONE PLAN'));
   } else if (game.id === 'flappy') {
     visual.append(element('span', 'preview-watermark', 'ONE MORE FLIGHT'));
   } else if (game.id === 'snake') {

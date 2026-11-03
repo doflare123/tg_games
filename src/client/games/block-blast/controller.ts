@@ -14,13 +14,15 @@ import {
   decodeBlockRun,
   decodeBlockState,
 } from '../../../shared/block-blast.ts';
-import { object, text } from '../../../shared/errors.ts';
+import { integer, object, text } from '../../../shared/errors.ts';
 import { api, hasApi } from '../../platform/api.ts';
 import { button, element, errorMessage } from '../../ui/dom.ts';
 import type { GameAdapter, GameHost } from '../adapter.ts';
+import crownUrl from './crown.svg';
 import './game.css';
 
 const SAVE_KEY = 'arcade:block-blast:v1';
+const BEST_KEY = 'arcade:block-blast:best:v1';
 let saveOwner: symbol | undefined;
 export function mountBlockBlast(host: GameHost): GameAdapter {
   const owner = Symbol('Block Blast');
@@ -35,6 +37,13 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
   let paused = false;
   let disposed = false;
   let storageFailed = false;
+  let bestScore = 0;
+  try {
+    const best = localStorage.getItem(BEST_KEY);
+    if (best !== null) bestScore = integer(JSON.parse(best), 0, Number.MAX_SAFE_INTEGER);
+  } catch {
+    // A missing or damaged local record does not prevent playing.
+  }
   let selected = 0;
   let focusCell = 0;
   let pollUntil = 0;
@@ -69,6 +78,14 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
   );
   toolbar.append(ranked, free);
   const mode = element('p', 'blast-mode');
+  const bestRow = element('div', 'blast-best-row');
+  const record = element('div', 'blast-record');
+  const crown = element('img', 'blast-crown');
+  crown.src = crownUrl;
+  crown.alt = '';
+  const bestNumber = element('strong');
+  record.append(crown, bestNumber);
+  bestRow.append(record, mode);
   const stats = element('div', 'blast-stats');
   const score = element('strong');
   const detail = element('span');
@@ -139,13 +156,13 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
   actions.append(finish, retry);
   const storageNote = element('p', 'control-hint');
   panel.append(
-    toolbar,
-    mode,
+    bestRow,
     stats,
     board,
     tray,
     status,
     actions,
+    toolbar,
     element(
       'p',
       'control-hint',
@@ -178,14 +195,22 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
   function save(): void {
     if (saveOwner !== owner) return;
     try {
+      bestScore = Math.max(bestScore, state.score);
       localStorage.setItem(SAVE_KEY, JSON.stringify({ state, run, pending, requestId, finished }));
+      localStorage.setItem(BEST_KEY, JSON.stringify(bestScore));
     } catch {
       storageFailed = true;
     }
   }
   function render(): void {
     if (disposed) return;
-    score.textContent = `${state.score.toLocaleString('ru-RU')} очков`;
+    bestScore = Math.max(bestScore, state.score);
+    bestNumber.textContent = bestScore.toLocaleString('ru-RU');
+    record.setAttribute('aria-label', `Рекорд: ${bestScore.toLocaleString('ru-RU')} очков`);
+    score.textContent = String(state.score);
+    score.setAttribute('aria-label', `${state.score.toLocaleString('ru-RU')} очков`);
+    const digits = String(state.score).length;
+    score.style.fontSize = `clamp(20px, ${Math.min(20, 140 / digits)}vw, ${Math.min(96, 660 / digits)}px)`;
     detail.textContent = `${state.lines} линий · ${state.clears} чистых полей`;
     mode.textContent =
       run?.status === 'verified'
@@ -201,7 +226,7 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
       piece !== undefined &&
       canPlaceBlock(state.board, piece, preview.x, preview.y);
     const highlighted = new Set(
-      shape && preview
+      valid && shape && preview
         ? shape.cells.map((cell) => {
             const x = cell.x + (preview?.x ?? 0);
             const y = cell.y + (preview?.y ?? 0);
@@ -215,8 +240,8 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
         : [];
     cells.forEach((cell, i) => {
       cell.dataset.color = String(state.board[i] ?? 0);
+      cell.dataset.previewColor = highlighted.has(i) ? String(((piece ?? 0) % 6) + 1) : '';
       cell.classList.toggle('blast-preview', highlighted.has(i));
-      cell.classList.toggle('blast-invalid', highlighted.has(i) && !valid);
       cell.classList.toggle('blast-clear-preview', cleared.includes(i));
       cell.disabled = locked();
       cell.setAttribute(
@@ -243,8 +268,8 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
       const mini = element('span', 'blast-mini');
       mini.style.gridTemplateColumns = `repeat(${s?.width ?? 1}, 1fr)`;
       mini.style.gridTemplateRows = `repeat(${s?.height ?? 1}, 1fr)`;
-      mini.style.width = `${(s?.width ?? 1) * 15}px`;
-      mini.style.height = `${(s?.height ?? 1) * 15}px`;
+      mini.style.width = `calc(${s?.width ?? 1} * var(--blast-mini-unit))`;
+      mini.style.height = `calc(${s?.height ?? 1} * var(--blast-mini-unit))`;
       if (s)
         for (const cell of s.cells) {
           const block = element('i');
@@ -253,10 +278,7 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
           block.style.gridRow = String(cell.y + 1);
           mini.append(block);
         }
-      control.replaceChildren(
-        mini,
-        element('span', 'blast-slot-label', s ? String(slot + 1).padStart(2, '0') : '✓'),
-      );
+      control.replaceChildren(mini, element('span', 'blast-slot-label', s ? String(slot + 1) : ''));
     });
     ranked.disabled =
       !hasApi ||
@@ -511,6 +533,16 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
       render();
     }
   }
+  if (hasApi)
+    void api
+      .blockBlastLeaderboard('all')
+      .then((board) => {
+        if (disposed) return;
+        bestScore = Math.max(bestScore, board.me?.score ?? 0);
+        save();
+        render();
+      })
+      .catch(() => {});
   const deliveryTimer = window.setInterval(() => {
     if (!disposed && !busy && run?.status === 'verified' && Date.now() < pollUntil)
       void api.getBlock(run.id).catch(() => {});

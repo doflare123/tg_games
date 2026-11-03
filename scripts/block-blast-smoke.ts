@@ -7,6 +7,7 @@ import {
   type BlockMove,
   type BlockState,
   blockPlacements,
+  canPlaceBlock,
   moveBlockBlast,
   placeBlock,
 } from '../src/games/block-blast/engine.ts';
@@ -79,9 +80,16 @@ try {
       await page.evaluate(() => localStorage.getItem('arcade:block-blast:v1') ?? '{}'),
     ) as Snapshot;
   await page.goto(origin);
+  await page
+    .locator('.block-blast-preview')
+    .screenshot({ path: '.cache/screenshots/block-blast-cover-desktop.png' });
   await page.getByRole('button', { name: 'Играть: Block Blast', exact: true }).click();
   await expect(page.locator('.blast-cell')).toHaveCount(64);
   await expect(page.locator('.blast-piece').first()).toBeEnabled();
+  for (const piece of await page.locator('.blast-piece').all()) {
+    await expect(piece).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await expect(piece).toHaveCSS('border-top-width', '0px');
+  }
   assert.equal(new URL(page.url()).hash, '#game_block-blast');
   await expect(page.locator('.blast-mode')).toContainText(production ? 'СВОБОДНАЯ' : 'РЕЙТИНГОВАЯ');
   const initial = await snapshot();
@@ -107,12 +115,50 @@ try {
     { steps: 12 },
   );
   await expect(page.locator('.blast-preview')).toHaveCount(shape.cells.length);
+  // Moving beyond the board hides its snapped projection, keeping the held figure visible.
+  await page.mouse.move(
+    target.x + 8 - unit + (shape.width / 2) * unit,
+    target.y + 8 + (shape.height / 2) * unit,
+  );
+  await expect(page.locator('.blast-preview, .blast-clear-preview')).toHaveCount(0);
+  await expect(page.locator('.blast-drag-ghost')).toBeVisible();
+  await page.mouse.move(
+    target.x + 8 + (first.x + shape.width / 2) * unit,
+    target.y + 8 + (first.y + shape.height / 2) * unit,
+  );
+  await expect(page.locator('.blast-preview')).toHaveCount(shape.cells.length);
   await page.mouse.up();
   assert(moveBlockBlast(simulated, first));
   assert.deepEqual((await snapshot()).state, simulated);
   // Keyboard selection + click placement, including one rejected move.
   const second = moves[1];
   assert(second);
+  const secondId = simulated.tray[second.slot];
+  assert(secondId !== null && secondId !== undefined);
+  const secondShape = BLOCK_SHAPES[secondId];
+  assert(secondShape);
+  const blocked = Array.from({ length: 64 }, (_, i) => ({ x: i % 8, y: Math.floor(i / 8) })).find(
+    (p) =>
+      p.x + secondShape.width <= 8 &&
+      p.y + secondShape.height <= 8 &&
+      !canPlaceBlock(simulated.board, secondId, p.x, p.y),
+  );
+  assert(blocked);
+  const secondSource = await page.locator('.blast-piece').nth(second.slot).boundingBox();
+  assert(secondSource);
+  await page.mouse.move(
+    secondSource.x + secondSource.width / 2,
+    secondSource.y + secondSource.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    target.x + 8 + (blocked.x + secondShape.width / 2) * unit,
+    target.y + 8 + (blocked.y + secondShape.height / 2) * unit,
+    { steps: 6 },
+  );
+  await expect(page.locator('.blast-preview, .blast-clear-preview')).toHaveCount(0);
+  await page.mouse.up();
+  assert.deepEqual((await snapshot()).state, simulated);
   await page.locator('.blast-piece').nth(second.slot).click();
   const beforeInvalid = await snapshot();
   await page.locator('.blast-cell').nth(63).click();
@@ -188,7 +234,11 @@ try {
   await phone.route('https://telegram.org/js/telegram-web-app.js*', (route) =>
     route.fulfill({ contentType: 'text/javascript', body: '' }),
   );
-  await phone.goto(`${origin}/#game_block-blast`);
+  await phone.goto(origin);
+  await phone
+    .locator('.block-blast-preview')
+    .screenshot({ path: '.cache/screenshots/block-blast-cover-mobile.png' });
+  await phone.getByRole('button', { name: 'Играть: Block Blast', exact: true }).click();
   await expect(phone.locator('.blast-piece').first()).toBeEnabled();
   const mobile = JSON.parse(
     await phone.evaluate(() => localStorage.getItem('arcade:block-blast:v1') ?? '{}'),

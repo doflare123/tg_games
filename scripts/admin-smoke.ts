@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { object, text } from '../src/shared/errors.ts';
 
 process.env.PLAYWRIGHT_BROWSERS_PATH = resolve('.cache/playwright');
@@ -80,9 +81,77 @@ try {
   });
   await expect(page.getByRole('heading', { name: 'АКТИВНОСТЬ ПО НЕДЕЛЯМ' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Кабинет', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Обращения и рассылки в боте ↗' })).toHaveAttribute(
+    'href',
+    'https://t.me/local_arcade_bot?start=inbox',
+  );
+  await expect(page.getByRole('link', { name: 'Предложить улучшение ↗' })).toHaveAttribute(
+    'href',
+    'https://t.me/local_arcade_bot?start=feedback',
+  );
+  const broadcastFixture = `browser-broadcast-${crypto.randomUUID()}`;
+  const threadFixture = `browser-thread-${crypto.randomUUID()}`;
+  const threadPlayer = 900000000000 + Math.floor(Math.random() * 1000000000);
+  const localDatabase = new DatabaseSync(resolve('.cache/arcade-admin-dev.sqlite'));
+  try {
+    localDatabase
+      .prepare(`INSERT INTO communication_jobs(id,kind,player_id,chat_id,body,status,due_at,expires_at,attempts,lease_until,telegram_message_id,error,created_at)
+      VALUES(?,'broadcast',0,-10001,'Сообщение группы в общем журнале','sent',1,10000,1,0,5068,NULL,1)`)
+      .run(broadcastFixture);
+    for (let i = 0; i < 3; i++) {
+      localDatabase
+        .prepare(
+          'INSERT INTO support_threads(player_id,player_name,created_at,updated_at) VALUES(?,?,1,1)',
+        )
+        .run(threadPlayer + i, `${threadFixture}-${i}`);
+      localDatabase
+        .prepare("INSERT INTO support_messages VALUES(?,?,'player','Баг',1)")
+        .run(`${threadFixture}:in:${i}`, threadPlayer + i);
+      if (i > 0)
+        localDatabase
+          .prepare(
+            `UPDATE support_threads SET read_order=(SELECT MAX(rowid) FROM support_messages WHERE player_id=?) WHERE player_id=?`,
+          )
+          .run(threadPlayer + i, threadPlayer + i);
+      if (i === 2) {
+        localDatabase
+          .prepare("INSERT INTO support_messages VALUES(?,?,'owner','Исправлено',2)")
+          .run(`${threadFixture}:out`, threadPlayer + i);
+        localDatabase
+          .prepare("UPDATE communication_jobs SET status='sent' WHERE id=?")
+          .run(`${threadFixture}:out`);
+        localDatabase
+          .prepare('UPDATE support_threads SET closed=1 WHERE player_id=?')
+          .run(threadPlayer + i);
+      }
+    }
+  } finally {
+    localDatabase.close();
+  }
   await mkdir('.cache/screenshots', { recursive: true });
   await page.screenshot({ path: '.cache/screenshots/admin-desktop.png', fullPage: true });
   await page.getByRole('button', { name: 'Данные', exact: true }).click();
+  await page.getByLabel('Таблица данных').selectOption('social_jobs');
+  await page.getByLabel('Поиск по данным').fill(broadcastFixture);
+  await page.getByRole('button', { name: 'Найти', exact: true }).click();
+  await expect(
+    page.getByRole('cell', { name: 'Сообщение группы в общем журнале', exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Открыть доставку в боте ↗' })).toHaveAttribute(
+    'href',
+    'https://t.me/local_arcade_bot?start=delivery',
+  );
+  await expect(page.getByRole('button', { name: 'Отменить отправку', exact: true })).toHaveCount(0);
+  await page.getByLabel('Таблица данных').selectOption('support_threads');
+  await page.getByLabel('Поиск по данным').fill(threadFixture);
+  await page.getByRole('button', { name: 'Найти', exact: true }).click();
+  for (const label of ['🟢 Новое', '🟡 Ждёт ответа', '🔴 Ответ доставлен', '📁 Закрыто']) {
+    await expect(page.getByRole('cell', { name: label, exact: true })).toBeVisible();
+  }
+  await expect(page.getByRole('link', { name: 'Открыть диалог в боте ↗' }).first()).toHaveAttribute(
+    'href',
+    /^https:\/\/t.me\/local_arcade_bot\?start=dialog_\d+$/,
+  );
   await page.getByLabel('Таблица данных').selectOption('puzzle2048_runs');
   await page.getByLabel('Поиск по данным').fill(runId);
   await page.getByRole('button', { name: 'Найти', exact: true }).click();

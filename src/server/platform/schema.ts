@@ -1,4 +1,73 @@
 import { index, integer, table, text } from 'sdk/db';
+export const communicationAttachments = table('communication_attachments', {
+  id: text('id').primaryKey(),
+  mediaJson: text('media_json').notNull(),
+});
+export const supportThreads = table('support_threads', {
+  playerId: integer('player_id').primaryKey(),
+  playerName: text('player_name').notNull(),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+  readOrder: integer('read_order').notNull().default(0),
+  closed: integer('closed').notNull().default(0),
+});
+export const supportCases = table('support_cases', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  playerId: integer('player_id').notNull(),
+  playerName: text('player_name').notNull(),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+  readOrder: integer('read_order').notNull().default(0),
+  closed: integer('closed').notNull().default(0),
+});
+export const supportMessages = table(
+  'support_messages',
+  {
+    id: text('id').primaryKey(),
+    playerId: integer('player_id').notNull(),
+    threadId: integer('thread_id'),
+    playerName: text('player_name').notNull().default('Игрок'),
+    direction: text('direction').notNull(),
+    body: text('body').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => ({ player: index('support_messages_player').on(t.playerId, t.createdAt) }),
+);
+export const communicationSessions = table('communication_sessions', {
+  actorId: integer('actor_id').primaryKey(),
+  dataJson: text('data_json').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
+export const broadcasts = table('broadcasts', {
+  id: text('id').primaryKey(),
+  body: text('body').notNull(),
+  groupIdsJson: text('group_ids_json').notNull(),
+  status: text('status').notNull(),
+  createdAt: integer('created_at').notNull(),
+  confirmedAt: integer('confirmed_at').notNull().default(0),
+});
+export const communicationJobs = table(
+  'communication_jobs',
+  {
+    id: text('id').primaryKey(),
+    kind: text('kind').notNull(),
+    playerId: integer('player_id').notNull(),
+    chatId: integer('chat_id').notNull(),
+    body: text('body').notNull(),
+    status: text('status').notNull(),
+    dueAt: integer('due_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    leaseUntil: integer('lease_until').notNull().default(0),
+    telegramMessageId: integer('telegram_message_id'),
+    error: text('error'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => ({
+    due: index('communication_jobs_due').on(t.status, t.dueAt, t.leaseUntil),
+    reply: index('communication_jobs_reply').on(t.chatId, t.telegramMessageId),
+  }),
+);
 export const adminMeta = table('admin_meta', {
   id: text('id').primaryKey(),
   installedAt: integer('installed_at').notNull(),
@@ -100,6 +169,31 @@ export const flappyRuns = table(
     recent: index('flappy_recent').on(t.playerId, t.createdAt),
     verifiedOrder: index('flappy_verified_order').on(t.verifiedOrder),
     pendingSocial: index('flappy_pending_social').on(t.status, t.socialProcessed, t.verifiedOrder),
+  }),
+);
+export const doodleRuns = table(
+  'doodle_runs',
+  {
+    id: text('id').primaryKey(),
+    playerId: integer('player_id').notNull(),
+    playerName: text('player_name').notNull(),
+    ruleset: text('ruleset').notNull(),
+    revision: integer('revision').notNull(),
+    stateJson: text('state_json').notNull(),
+    status: text('status').notNull(),
+    score: integer('score').notNull(),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    lastSubmission: text('last_submission'),
+    verifiedAt: integer('verified_at').notNull().default(0),
+    verifiedOrder: integer('verified_order').notNull().default(0),
+    socialProcessed: integer('social_processed').notNull().default(1),
+  },
+  (t) => ({
+    leaderboard: index('doodle_leaderboard').on(t.ruleset, t.status, t.score, t.createdAt),
+    recent: index('doodle_recent').on(t.playerId, t.createdAt),
+    verifiedOrder: index('doodle_verified_order').on(t.verifiedOrder),
+    pendingSocial: index('doodle_pending_social').on(t.status, t.socialProcessed, t.verifiedOrder),
   }),
 );
 export const snakeRuns = table(

@@ -5,6 +5,7 @@ import { returnedRows } from './sql-write.ts';
 const GAME_TABLES = {
   '2048': 'puzzle2048_runs',
   minesweeper: 'minesweeper_runs',
+  'block-blast': 'block_blast_runs',
 } as const;
 const RANKED_TABLES = [
   ['puzzle2048_runs', 'verified'],
@@ -12,6 +13,7 @@ const RANKED_TABLES = [
   ['runs', 'verified'],
   ['snake_runs', 'verified'],
   ['flappy_runs', 'verified'],
+  ['doodle_runs', 'verified'],
   ['block_blast_runs', 'verified'],
   ['manual_results', null],
 ] as const;
@@ -50,7 +52,7 @@ export function moderationRequest(input: unknown) {
   if (!Array.isArray(data.removeGames) || data.removeGames.length === 0)
     throw new Error('Specify games whose results should be removed');
   const removeGames = [
-    ...new Set(data.removeGames.map((game) => oneOf(game, ['2048', 'minesweeper']))),
+    ...new Set(data.removeGames.map((game) => oneOf(game, ['2048', 'minesweeper', 'block-blast']))),
   ];
   return { playerId, expectedName, reason, removeGames };
 }
@@ -82,7 +84,16 @@ export async function moderationSnapshot(db: SqlDatabase, input: unknown) {
 export async function blockRankingAndRemove(db: SqlDatabase, input: unknown, now: number) {
   const { request } = await moderationSnapshot(db, input);
   integer(now, 0, Number.MAX_SAFE_INTEGER);
-  for (const statement of RANKING_BLOCK_DDL) await db.run(statement);
+  const triggers = await db.all("SELECT name FROM sqlite_master WHERE type='trigger'");
+  if (!Array.isArray(triggers)) throw new Error('Invalid trigger inventory');
+  const existing = new Set(triggers.map((row) => text(object(row).name, 1, 200)));
+  // Cloud SQLite rejects an existing CREATE TRIGGER through db.run as a read.
+  for (const statement of RANKING_BLOCK_DDL) {
+    const trigger = /CREATE TRIGGER IF NOT EXISTS ([a-z_0-9]+)/.exec(statement)?.[1];
+    if (trigger && existing.has(trigger)) continue;
+    await db.run(statement);
+    if (trigger) existing.add(trigger);
+  }
   const parameters = { ':player': request.playerId };
   await db.run(
     `INSERT INTO ranking_blocks(player_id,reason,created_at) VALUES(:player,:reason,:now)

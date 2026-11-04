@@ -4,6 +4,7 @@ import { createSnake } from '../games/snake/engine.ts';
 import { snakeRenderer } from './games/snake/renderer.ts';
 import './games/snake/snake.css';
 import './games/flappy/flappy.css';
+import './games/doodle/doodle.css';
 import './games/block-blast/game.css';
 import { type LaunchTarget, parseLaunch } from '../shared/launch.ts';
 import { mountLeaderboard } from './ui/leaderboard.ts';
@@ -53,6 +54,19 @@ footer.append(
   element('span', '', 'NO COINS REQUIRED ↗'),
 );
 root.append(header, content, footer);
+if (hasApi)
+  void api
+    .communicationLinks()
+    .then((links) => {
+      const feedback = element('a', '', 'Предложить улучшение ↗');
+      feedback.href = links.feedback;
+      feedback.target = '_blank';
+      feedback.rel = 'noopener';
+      footer.append(feedback);
+    })
+    .catch(() => {
+      /* The catalog remains usable during a temporary bot lookup failure. */
+    });
 let disposeBoard: (() => void) | null = null;
 let disposeGame: (() => void) | null = null;
 let currentView: LaunchTarget = { view: 'catalog' };
@@ -128,6 +142,14 @@ function preview(game: GameInfo): HTMLElement {
       figures.append(mini);
     }
     visual.append(blocks, figures, element('span', 'preview-watermark', 'THREE PIECES / ONE PLAN'));
+  } else if (game.id === 'doodle') {
+    const frame = element('div', 'doodle-cover-frame');
+    const cover = element('img', 'doodle-cover');
+    cover.src = '/assets/doodle/comic-cover.png';
+    cover.alt = '';
+    cover.loading = 'lazy';
+    frame.append(cover);
+    visual.append(frame);
   } else if (game.id === 'flappy') {
     visual.append(element('span', 'preview-watermark', 'ONE MORE FLIGHT'));
   } else if (game.id === 'snake') {
@@ -239,7 +261,7 @@ function renderCatalog(): void {
     element(
       'p',
       'hero-description',
-      'Тетрис, Сапёр, 2048, Змейка, Block Blast и Flappy Bird.\nВыбирай игру и вырасти свой рекорд.',
+      'Тетрис, Сапёр, 2048, Змейка, Block Blast, Flappy Bird и Doodle Jump.\nВыбирай игру и вырасти свой рекорд.',
     ),
   );
   const actions = element('div', 'hero-actions');
@@ -460,30 +482,33 @@ async function mountGamePage(
             import('./games/block-blast/controller.ts').then((module) =>
               module.mountBlockBlast(host),
             )
-        : game.id === 'flappy'
+        : game.id === 'doodle'
           ? (host: { container: HTMLElement; onClose(): void }) =>
-              import('./games/flappy/controller.ts').then((module) => module.mountFlappy(host))
-          : game.id === 'tetris'
+              import('./games/doodle/controller.ts').then((module) => module.mountDoodle(host))
+          : game.id === 'flappy'
             ? (host: { container: HTMLElement; onClose(): void }) =>
-                import('./games/tetris/controller.ts').then((module) =>
-                  module.mountTetris(host, initialMode),
-                )
-            : game.id === 'snake'
+                import('./games/flappy/controller.ts').then((module) => module.mountFlappy(host))
+            : game.id === 'tetris'
               ? (host: { container: HTMLElement; onClose(): void }) =>
-                  import('./games/snake/controller.ts').then((module) =>
-                    module.mountSnake(host, initialSnakeSize),
+                  import('./games/tetris/controller.ts').then((module) =>
+                    module.mountTetris(host, initialMode),
                   )
-              : game.id === '2048'
+              : game.id === 'snake'
                 ? (host: { container: HTMLElement; onClose(): void }) =>
-                    import('./games/2048/controller.ts').then((module) => module.mount2048(host))
-                : game.id === 'minesweeper'
+                    import('./games/snake/controller.ts').then((module) =>
+                      module.mountSnake(host, initialSnakeSize),
+                    )
+                : game.id === '2048'
                   ? (host: { container: HTMLElement; onClose(): void }) =>
-                      import('./games/minesweeper/controller.ts').then((module) =>
-                        module.mountMinesweeper(host, initialSize),
-                      )
-                  : game.id === 'mario'
-                    ? (await import('./games/mario/adapter.ts')).mountMario
-                    : (await import('./games/doom/adapter.ts')).mountDoom;
+                      import('./games/2048/controller.ts').then((module) => module.mount2048(host))
+                  : game.id === 'minesweeper'
+                    ? (host: { container: HTMLElement; onClose(): void }) =>
+                        import('./games/minesweeper/controller.ts').then((module) =>
+                          module.mountMinesweeper(host, initialSize),
+                        )
+                    : game.id === 'mario'
+                      ? (await import('./games/mario/adapter.ts')).mountMario
+                      : (await import('./games/doom/adapter.ts')).mountDoom;
     if (closed) return;
     body.replaceChildren();
     adapter = await mount(host);

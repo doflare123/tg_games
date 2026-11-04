@@ -1,0 +1,161 @@
+.doodle-game {
+  display: grid;
+  justify-items: center;
+  gap: 9px;
+  width: 100%;
+  --doodle-ink: #355541;
+}
+.doodle-toolbar,
+.doodle-tilt-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+}
+.doodle-toolbar {
+  width: min(100%, 400px);
+  justify-content: space-between;
+}
+.doodle-toolbar .button,
+.doodle-tilt-controls .button {
+  min-height: 36px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.doodle-mode {
+  margin: 0;
+  font-size: 11px;
+  color: #b4c8ac;
+  align-self: center;
+}
+.doodle-message,
+.doodle-tilt-status {
+  margin: 0;
+  max-width: 480px;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+.doodle-field {
+  width: min(100%, 400px, calc((100dvh - 220px) * 2 / 3));
+  min-width: 220px;
+  border: 2px solid #698368;
+  border-radius: 18px;
+  overflow: hidden;
+  background: #edf7ed;
+  box-shadow: 0 8px 28px #00000024;
+}
+.doodle-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 2 / 3;
+  touch-action: none;
+  outline: none;
+  border-radius: inherit;
+}
+.doodle-field:focus-within {
+  border-color: #e8b75c;
+}
+.doodle-controls {
+  display: flex;
+  width: min(100%, 400px);
+  gap: 10px;
+}
+.doodle-controls .button {
+  flex: 1;
+  min-height: 52px;
+  font-size: 25px;
+  touch-action: none;
+  user-select: none;
+  border-radius: 12px;
+  border-color: #72896a;
+  color: #d8e6ce;
+}
+.doodle-controls .doodle-fire {
+  flex: 1.15;
+  background: #e8b75c;
+  color: #352c1d;
+  border-color: #efca83;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+.doodle-fire span {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+.doodle-fire:active {
+  background: #ffdc8e;
+  transform: translateY(1px);
+}
+.doodle-toolbar .doodle-start {
+  min-height: 42px;
+  min-width: 140px;
+  border-radius: 11px;
+  background: #e8b75c;
+  color: #352c1d;
+  border-color: #efca83;
+  font-size: 14px;
+}
+.doodle-pause {
+  margin-left: auto;
+}
+.doodle-ranked-note {
+  font-size: 10px;
+  opacity: 0.65;
+  text-align: center;
+  margin: 1px 0;
+}
+.doodle-game .control-hint {
+  max-width: 480px;
+  text-align: center;
+  line-height: 1.6;
+  margin: 3px 0;
+}
+@media (max-width: 480px) {
+  .doodle-game {
+    gap: 8px;
+  }
+  .doodle-field {
+    width: min(100%, 390px, calc((100dvh - 205px) * 2 / 3));
+  }
+  .doodle-controls .button {
+    min-height: 50px;
+  }
+  .doodle-message,
+  .doodle-tilt-status {
+    font-size: 11px;
+  }
+}
+.doodle-preview {
+  background: #eedca3;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.doodle-preview::before {
+  content: "";
+  position: absolute;
+  inset: -8px;
+  background: url("/assets/doodle/comic-cover.png") center 58% / cover;
+  filter: blur(3px);
+  opacity: 0.2;
+}
+.doodle-cover-frame {
+  height: 100%;
+  aspect-ratio: 813 / 1232;
+  z-index: 1;
+  position: relative;
+  overflow: hidden;
+}
+.doodle-cover {
+  position: absolute;
+  width: 117.47%;
+  max-width: none;
+  height: 101.62%;
+  left: -6.27%;
+  top: -1.62%;
+}

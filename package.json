@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "admin:install": "node --experimental-transform-types scripts/install-admin.ts",
+    "communications:install": "node --experimental-transform-types scripts/install-communications.ts",
     "test:admin:browser": "node --experimental-transform-types scripts/admin-smoke.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.cloud.json",
     "test": "vitest run",
@@ -23,6 +24,7 @@
     "build:doom": "node scripts/build-doom.ts",
     "test:browser": "node scripts/browser-smoke.ts",
     "test:snake:browser": "node scripts/snake-smoke.ts",
+    "test:doodle:browser": "node --experimental-transform-types scripts/doodle-smoke.ts && node --experimental-transform-types scripts/doodle-tilt-smoke.ts",
     "test:flappy:browser": "node scripts/flappy-smoke.ts",
     "test:block-blast:browser": "node --experimental-transform-types scripts/block-blast-smoke.ts",
     "setup:doom": "node scripts/setup-doom.ts",

@@ -1,7 +1,10 @@
 import { LEGACY_2048_RULESET, RULESETS_2048 } from '../../games/2048/engine.ts';
+import { LEGACY_DOODLE_RULESET } from '../../games/doodle/engine.ts';
 import { SIZES } from '../../games/minesweeper/engine.ts';
 import { MODES } from '../../games/tetris/types.ts';
 import type { Player } from '../../shared/contracts.ts';
+import { DOODLE_RULESETS } from '../../shared/doodle.ts';
+import { isDoodleRankedEnabled } from '../../shared/doodle-policy.ts';
 import { AppError, object, oneOf } from '../../shared/errors.ts';
 import type { GroupRecord } from '../../shared/groups.ts';
 import { launchUrl } from '../../shared/launch.ts';
@@ -10,6 +13,8 @@ import type { Repository2048, Stored2048 } from './2048.ts';
 import { record2048Notification } from './2048-record-notification.ts';
 import type { BlockRepository, StoredBlock } from './block-blast.ts';
 import { blockBlastRecordNotification } from './block-blast-record-notification.ts';
+import type { DoodleRepository, StoredDoodle } from './doodle.ts';
+import { doodleRecordNotification } from './doodle-record-notification.ts';
 import type { FlappyRepository, StoredFlappy } from './flappy.ts';
 import { flappyRecordNotification } from './flappy-record-notification.ts';
 import type { GroupService } from './groups.ts';
@@ -33,6 +38,7 @@ export class MaintenanceService {
     private readonly snake?: SnakeRepository,
     private readonly flappy?: FlappyRepository,
     private readonly blockBlast?: BlockRepository,
+    private readonly doodle?: DoodleRepository,
   ) {}
   private async targetGroups(
     player: Player,
@@ -299,6 +305,61 @@ export class MaintenanceService {
     }
     await this.flappy.processed(run.id);
   }
+  async doodleResult(run: StoredDoodle): Promise<void> {
+    if (!this.doodle || run.status !== 'verified' || run.socialProcessed) return;
+    if (!isDoodleRankedEnabled()) {
+      await this.doodle.processed(run.id);
+      return;
+    }
+    const player = { id: run.playerId, name: run.playerName };
+    for (const group of await this.targetGroups(player, run.verifiedAt)) {
+      try {
+        await this.groups.access(player, group.id);
+      } catch (error) {
+        if (
+          error instanceof AppError &&
+          (error.code === 'UNAUTHORIZED' || error.code === 'NOT_FOUND')
+        )
+          continue;
+        throw error;
+      }
+      const sync = await this.groups.synchronize(group.id);
+      if (sync.state !== 'complete')
+        throw new AppError('UNAVAILABLE', 'Обновляется состав группы; объявление отложено');
+      const scope = {
+        groupId: group.id,
+        membershipCheckedSince: sync.checkedSince,
+        ruleset: run.ruleset,
+      };
+      const before = await this.doodle.leaderboard(player, 'all', 0, {
+        ...scope,
+        maxResultOrder: run.verifiedOrder - 1,
+      });
+      const after = await this.doodle.leaderboard(player, 'all', 0, {
+        ...scope,
+        maxResultOrder: run.verifiedOrder,
+      });
+      const message = doodleRecordNotification(run, before, after);
+      if (message)
+        await this.repository.enqueue({
+          id: `record:${run.id}:${group.id}`,
+          payload: {
+            type: 'record',
+            game: 'doodle',
+            chatId: group.id,
+            playerId: run.playerId,
+            mode: run.ruleset,
+            runId: run.id,
+            rank: after.me?.rank ?? 1,
+            text: message,
+          },
+          dueAt: this.now(),
+          expiresAt: this.now() + 86400000,
+          attempts: 0,
+        });
+    }
+    await this.doodle.processed(run.id);
+  }
   async blockBlastResult(run: StoredBlock): Promise<void> {
     if (!this.blockBlast || run.status !== 'verified' || run.socialProcessed) return;
     const player = { id: run.playerId, name: run.playerName };
@@ -404,6 +465,17 @@ export class MaintenanceService {
         );
       }
     }
+    for (const run of (await this.doodle?.pendingResults(3)) ?? []) {
+      try {
+        await this.doodleResult(run);
+      } catch (error) {
+        deferred++;
+        console.warn(
+          'doodle_record_generation_deferred',
+          error instanceof Error ? error.message : 'unknown',
+        );
+      }
+    }
     for (const run of (await this.blockBlast?.pendingResults(3)) ?? []) {
       try {
         await this.blockBlastResult(run);
@@ -425,6 +497,10 @@ export class MaintenanceService {
     return { processed, deferred };
   }
   private async execute(job: SocialJob): Promise<void> {
+    if (job.payload.game === 'doodle' && !isDoodleRankedEnabled()) {
+      await this.repository.complete(job, 'suppressed', 'Doodle ranking disabled');
+      return;
+    }
     const now = this.now();
     if (now > job.expiresAt || job.attempts > 5) {
       await this.repository.complete(job, 'expired');
@@ -449,46 +525,56 @@ export class MaintenanceService {
         throw new AppError('UNAVAILABLE', 'Рейтинг 2048 недоступен');
       if (payload.game === 'snake' && !this.snake)
         throw new AppError('UNAVAILABLE', 'Рейтинг Змейки недоступен');
+      if (payload.game === 'doodle' && !this.doodle)
+        throw new AppError('UNAVAILABLE', 'Рейтинг Doodle Jump недоступен');
       if (payload.game === 'flappy' && !this.flappy)
         throw new AppError('UNAVAILABLE', 'Рейтинг Flappy Bird недоступен');
       if (payload.game === 'block-blast' && !this.blockBlast)
         throw new AppError('UNAVAILABLE', 'Рейтинг Block Blast недоступен');
       const board =
-        payload.game === 'block-blast' && this.blockBlast
-          ? await this.blockBlast.leaderboard(player, 'all', 0, scope)
-          : payload.game === 'flappy' && this.flappy
-            ? await this.flappy.leaderboard(player, 'all', 0, scope)
-            : payload.game === 'snake' && this.snake
-              ? await this.snake.leaderboard(
-                  player,
-                  snakeSize(Number(payload.mode)),
-                  'all',
-                  0,
-                  scope,
-                )
-              : payload.game === '2048' && this.puzzle2048
-                ? await this.puzzle2048.leaderboard(player, 'all', 0, {
-                    ...scope,
-                    ruleset:
-                      payload.mode === 'classic'
-                        ? LEGACY_2048_RULESET
-                        : oneOf(payload.mode, RULESETS_2048),
-                  })
-                : payload.game === 'minesweeper' && this.mines
-                  ? await this.mines.leaderboard(
-                      player,
-                      oneOf(payload.mode, SIZES),
-                      'all',
-                      0,
-                      scope,
-                    )
-                  : await this.arcade.leaderboard(
-                      { id: payload.playerId, name: 'Игрок' },
-                      oneOf(payload.mode, MODES),
-                      'all',
-                      0,
-                      scope,
-                    );
+        payload.game === 'doodle' && this.doodle
+          ? await this.doodle.leaderboard(player, 'all', 0, {
+              ...scope,
+              ruleset:
+                payload.mode === 'classic'
+                  ? LEGACY_DOODLE_RULESET
+                  : oneOf(payload.mode, DOODLE_RULESETS),
+            })
+          : payload.game === 'block-blast' && this.blockBlast
+            ? await this.blockBlast.leaderboard(player, 'all', 0, scope)
+            : payload.game === 'flappy' && this.flappy
+              ? await this.flappy.leaderboard(player, 'all', 0, scope)
+              : payload.game === 'snake' && this.snake
+                ? await this.snake.leaderboard(
+                    player,
+                    snakeSize(Number(payload.mode)),
+                    'all',
+                    0,
+                    scope,
+                  )
+                : payload.game === '2048' && this.puzzle2048
+                  ? await this.puzzle2048.leaderboard(player, 'all', 0, {
+                      ...scope,
+                      ruleset:
+                        payload.mode === 'classic'
+                          ? LEGACY_2048_RULESET
+                          : oneOf(payload.mode, RULESETS_2048),
+                    })
+                  : payload.game === 'minesweeper' && this.mines
+                    ? await this.mines.leaderboard(
+                        player,
+                        oneOf(payload.mode, SIZES),
+                        'all',
+                        0,
+                        scope,
+                      )
+                    : await this.arcade.leaderboard(
+                        { id: payload.playerId, name: 'Игрок' },
+                        oneOf(payload.mode, MODES),
+                        'all',
+                        0,
+                        scope,
+                      );
       if (!board.me || board.me.rank !== payload.rank || board.me.runId !== payload.runId) {
         await this.repository.complete(job, 'suppressed', 'Superseded record');
         return;
@@ -498,6 +584,7 @@ export class MaintenanceService {
           payload.game === '2048' ||
           payload.game === 'snake' ||
           payload.game === 'flappy' ||
+          payload.game === 'doodle' ||
           payload.game === 'block-blast'
         ) {
           const updated = await this.repository.group(payload.chatId);
@@ -523,17 +610,19 @@ export class MaintenanceService {
                 text: '🎮 Побить рекорд',
                 url: launchUrl(
                   me.username,
-                  payload.game === 'block-blast'
-                    ? 'game_block-blast'
-                    : payload.game === 'flappy'
-                      ? 'game_flappy'
-                      : payload.game === 'snake'
-                        ? `game_snake_${payload.mode}`
-                        : payload.game === '2048'
-                          ? 'game_2048'
-                          : payload.game === 'minesweeper'
-                            ? `game_minesweeper_${payload.mode}`
-                            : `game_tetris_${payload.mode}`,
+                  payload.game === 'doodle'
+                    ? 'game_doodle'
+                    : payload.game === 'block-blast'
+                      ? 'game_block-blast'
+                      : payload.game === 'flappy'
+                        ? 'game_flappy'
+                        : payload.game === 'snake'
+                          ? `game_snake_${payload.mode}`
+                          : payload.game === '2048'
+                            ? 'game_2048'
+                            : payload.game === 'minesweeper'
+                              ? `game_minesweeper_${payload.mode}`
+                              : `game_tetris_${payload.mode}`,
                   me.hasMainMiniApp ? 'startapp' : 'start',
                 ),
               },

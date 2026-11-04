@@ -253,15 +253,76 @@ try {
   assert(src && dest);
   const touch = await phone.context().newCDPSession(phone);
   const start = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
-  const mobileUnit = (dest.width - 16) / 8;
-  const end = {
-    x: dest.x + 8 + (position.x + s.width / 2) * mobileUnit,
-    y: dest.y + 8 + (position.y + s.height + 0.7) * mobileUnit,
-  };
+  const cellRects = await phone.locator('.blast-cell').evaluateAll((cells) =>
+    [0, 1, 8].map((i) => {
+      const rect = cells[i]?.getBoundingClientRect();
+      if (!rect) throw new Error('Missing board cell');
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    }),
+  );
+  const [firstCell, secondCell, belowCell] = cellRects;
+  assert(firstCell && secondCell && belowCell);
+  const pitchX = secondCell.x - firstCell.x;
+  const pitchY = belowCell.y - firstCell.y;
+  const shapeHeight = (s.height - 1) * pitchY + firstCell.height;
+  const ghost = phone.locator('.blast-drag-ghost');
+  // Pickup is immediate; upward travel increases the separation from the finger.
   await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [start] });
+  await expect(ghost).toBeVisible();
+  const pickup = await ghost.boundingBox();
+  assert(pickup && start.y - pickup.y - pickup.height >= 39);
+  const heldBlock = await ghost.locator('i').first().elementHandle();
+  assert(heldBlock);
+  await touch.send('Input.dispatchTouchEvent', {
+    type: 'touchMove',
+    touchPoints: [{ x: start.x, y: start.y - 40 }],
+  });
+  await expect.poll(async () => (await ghost.boundingBox())?.y).toBeLessThan(pickup.y - 55);
+  const lifted = await ghost.boundingBox();
+  assert(lifted && pickup.y - lifted.y < 65);
+  assert(
+    await heldBlock.evaluate((block) => block.isConnected),
+    'Dragging must reuse the held blocks',
+  );
+  await touch.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
+  await expect(ghost).toBeHidden();
+  await expect(
+    phone.locator('.blast-preview, .blast-clear-preview, .blast-piece.dragging'),
+  ).toHaveCount(0);
+  assert.deepEqual(
+    JSON.parse(await phone.evaluate(() => localStorage.getItem('arcade:block-blast:v1') ?? '{}'))
+      .state,
+    mobile.state,
+  );
+  // Move to the actual snapped cell with a shorter finger gesture than the old 1:1 mapping.
+  await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [start] });
+  const freshPickup = await ghost.boundingBox();
+  assert(freshPickup);
+  const targetX = firstCell.x + position.x * pitchX;
+  const targetY = firstCell.y + position.y * pitchY;
+  const upDistance = freshPickup.y - targetY;
+  assert(upDistance > 0 && upDistance < 9 * pitchY);
+  const end = {
+    x: start.x + (targetX - freshPickup.x) / 1.2,
+    y: start.y - upDistance / 1.5,
+  };
+  const legacyTravel = start.y - (targetY + shapeHeight + pitchY * 0.7);
+  assert(
+    start.y - end.y < legacyTravel * 0.8,
+    'The top row should need substantially less finger travel',
+  );
   await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [end] });
   await expect(phone.locator('.blast-preview')).toHaveCount(s.cells.length);
+  const placedGhost = await ghost.boundingBox();
+  assert(
+    placedGhost && Math.abs(placedGhost.x - targetX) < 1 && Math.abs(placedGhost.y - targetY) < 1,
+  );
+  await phone.screenshot({
+    path: '.cache/screenshots/block-blast-mobile-drag.png',
+  });
+  await expect(ghost).toBeVisible();
   await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await expect(ghost).toBeHidden();
   assert(moveBlockBlast(mobile.state, { slot: 0, ...position }));
   assert.deepEqual(
     JSON.parse(await phone.evaluate(() => localStorage.getItem('arcade:block-blast:v1') ?? '{}'))
@@ -271,7 +332,7 @@ try {
   await phone.screenshot({ path: '.cache/screenshots/block-blast-mobile.png', fullPage: true });
   assert.deepEqual(errors, []);
   console.log(
-    `Block Blast browser checks passed (${production ? 'production free play' : 'local authoritative API'}): drag, touch, click, keyboard selection, solvable refill, persistence, responsive layout${production ? '' : ', retry after lost response, global/group/week rankings'}.`,
+    `Block Blast browser checks passed (${production ? 'production free play' : 'local authoritative API'}): drag, accelerated touch with growing lift, cancellation, click, keyboard selection, solvable refill, persistence, responsive layout${production ? '' : ', retry after lost response, global/group/week rankings'}.`,
   );
 } finally {
   await browser.close();

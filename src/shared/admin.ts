@@ -7,6 +7,7 @@ export const ADMIN_TABLES = [
   'puzzle2048_runs',
   'snake_runs',
   'flappy_runs',
+  'doodle_runs',
   'block_blast_runs',
   'minesweeper_runs',
   'manual_results',
@@ -16,6 +17,7 @@ export const ADMIN_TABLES = [
   'admin_visits',
   'admin_group_events',
   'admin_audit',
+  'support_threads',
 ] as const;
 export type AdminTable = (typeof ADMIN_TABLES)[number];
 export const ADMIN_ACTIONS = [
@@ -27,6 +29,7 @@ export const ADMIN_ACTIONS = [
   'revoke_2048',
   'revoke_snake',
   'revoke_flappy',
+  'revoke_doodle',
   'revoke_block_blast',
   'revoke_minesweeper',
   'remove_manual',

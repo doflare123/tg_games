@@ -19,6 +19,7 @@ import { api, hasApi } from '../../platform/api.ts';
 import { button, element, errorMessage } from '../../ui/dom.ts';
 import type { GameAdapter, GameHost } from '../adapter.ts';
 import crownUrl from './crown.svg';
+import { blockDragOrigin, type DragPoint } from './drag.ts';
 import './game.css';
 
 const SAVE_KEY = 'arcade:block-blast:v1';
@@ -47,11 +48,25 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
   let selected = 0;
   let focusCell = 0;
   let pollUntil = 0;
-  let drag: { id: number; startX: number; startY: number; moved: boolean; touch: boolean } | null =
-    null;
+  let drag: {
+    id: number;
+    slot: number;
+    start: DragPoint;
+    pointer: DragPoint;
+    moved: boolean;
+    touch: boolean;
+    left: number;
+    top: number;
+    pitchX: number;
+    pitchY: number;
+    width: number;
+    height: number;
+    cellSize: number;
+  } | null = null;
+  let dragFrame: number | null = null;
   let preview: { x: number; y: number } | null = null;
   const panel = element('section', 'block-blast');
-  const toolbar = element('div', 'blast-toolbar');
+  const toolbar = element('div', 'blast-toolbar blast-mode-picker');
   const ranked = button(
     'Рейтинговая партия',
     () => {
@@ -62,7 +77,7 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
   const free = button(
     'Свободная партия',
     () => {
-      if (busy) return;
+      if (busy || drag) return;
       if (run || requestId) {
         run = null;
         requestId = null;
@@ -110,7 +125,7 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
     const piece = button(
       '',
       () => {
-        if (locked() || state.tray[slot] === null) return;
+        if (locked() || drag || state.tray[slot] === null) return;
         selected = slot;
         preview = null;
         render();
@@ -118,18 +133,50 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
       'blast-piece',
     );
     piece.addEventListener('pointerdown', (event) => {
-      if (locked() || !event.isPrimary || event.button !== 0 || state.tray[slot] === null) return;
+      if (locked() || drag || !event.isPrimary || event.button !== 0) return;
+      const id = state.tray[slot];
+      const shape = id === null || id === undefined ? undefined : BLOCK_SHAPES[id];
+      const first = cells[0]?.getBoundingClientRect();
+      const next = cells[1]?.getBoundingClientRect();
+      const below = cells[8]?.getBoundingClientRect();
+      if (!shape || !first || !next || !below) return;
       selected = slot;
+      preview = null;
+      const pitchX = next.left - first.left;
+      const pitchY = below.top - first.top;
       drag = {
         id: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
+        slot,
+        start: { x: event.clientX, y: event.clientY },
+        pointer: { x: event.clientX, y: event.clientY },
         moved: false,
         touch: event.pointerType === 'touch',
+        left: first.left,
+        top: first.top,
+        pitchX,
+        pitchY,
+        width: (shape.width - 1) * pitchX + first.width,
+        height: (shape.height - 1) * pitchY + first.height,
+        cellSize: pitchY,
       };
+      ghost.style.width = `${drag.width}px`;
+      ghost.style.height = `${drag.height}px`;
+      ghost.style.gridTemplateColumns = `repeat(${shape.width}, 1fr)`;
+      ghost.style.gridTemplateRows = `repeat(${shape.height}, 1fr)`;
+      ghost.replaceChildren(
+        ...shape.cells.map((cell) => {
+          const block = element('i');
+          block.dataset.color = String(((id ?? 0) % 6) + 1);
+          block.style.gridColumn = String(cell.x + 1);
+          block.style.gridRow = String(cell.y + 1);
+          return block;
+        }),
+      );
       piece.setPointerCapture(event.pointerId);
       render();
+      if (drag.touch) drawDrag();
     });
+    piece.addEventListener('lostpointercapture', pointercancel);
     tray.append(piece);
     return piece;
   });
@@ -139,7 +186,7 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
   const finish = button(
     'Завершить и записать очки',
     () => {
-      if (locked()) return;
+      if (locked() || drag) return;
       finished = true;
       save();
       void sync();
@@ -156,13 +203,13 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
   actions.append(finish, retry);
   const storageNote = element('p', 'control-hint');
   panel.append(
+    toolbar,
     bestRow,
     stats,
     board,
     tray,
     status,
     actions,
-    toolbar,
     element(
       'p',
       'control-hint',
@@ -218,6 +265,33 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
         : run || requestId
           ? '● РЕЙТИНГОВАЯ ПАРТИЯ'
           : '○ СВОБОДНАЯ ПАРТИЯ';
+    renderPreview();
+    cells.forEach((cell, i) => {
+      cell.dataset.color = String(state.board[i] ?? 0);
+      cell.disabled = locked();
+      cell.setAttribute(
+        'aria-label',
+        `Строка ${Math.floor(i / 8) + 1}, столбец ${(i % 8) + 1}${state.board[i] ? ', занято' : ', свободно'}`,
+      );
+    });
+    renderPieces();
+    ranked.disabled =
+      !hasApi ||
+      busy ||
+      failed ||
+      requestId !== null ||
+      (run !== null && run.status !== 'verified');
+    free.disabled = busy;
+    free.textContent = run || requestId ? 'Продолжить свободно' : 'Новая свободная партия';
+    finish.hidden = !run || run.status === 'verified';
+    finish.disabled = locked();
+    retry.hidden = !failed;
+    retry.disabled = busy;
+    storageNote.textContent = storageFailed
+      ? 'Не удалось сохранить на устройстве. Оставь страницу открытой до отправки результата.'
+      : 'Партия сохраняется на устройстве. Вернись в Block Blast, чтобы продолжить.';
+  }
+  function renderPreview(): void {
     const piece = state.tray[selected];
     const shape = piece === null || piece === undefined ? undefined : BLOCK_SHAPES[piece];
     const valid =
@@ -239,16 +313,12 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
         ? (placeBlock([...state.board], piece, preview.x, preview.y)?.cells ?? [])
         : [];
     cells.forEach((cell, i) => {
-      cell.dataset.color = String(state.board[i] ?? 0);
       cell.dataset.previewColor = highlighted.has(i) ? String(((piece ?? 0) % 6) + 1) : '';
       cell.classList.toggle('blast-preview', highlighted.has(i));
       cell.classList.toggle('blast-clear-preview', cleared.includes(i));
-      cell.disabled = locked();
-      cell.setAttribute(
-        'aria-label',
-        `Строка ${Math.floor(i / 8) + 1}, столбец ${(i % 8) + 1}${state.board[i] ? ', занято' : ', свободно'}`,
-      );
     });
+  }
+  function renderPieces(): void {
     pieces.forEach((control, slot) => {
       const id = state.tray[slot];
       const s = id === null || id === undefined ? undefined : BLOCK_SHAPES[id];
@@ -280,24 +350,9 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
         }
       control.replaceChildren(mini, element('span', 'blast-slot-label', s ? String(slot + 1) : ''));
     });
-    ranked.disabled =
-      !hasApi ||
-      busy ||
-      failed ||
-      requestId !== null ||
-      (run !== null && run.status !== 'verified');
-    free.disabled = busy;
-    free.textContent = run || requestId ? 'Продолжить свободно' : 'Новая свободная партия';
-    finish.hidden = !run || run.status === 'verified';
-    finish.disabled = locked();
-    retry.hidden = !failed;
-    retry.disabled = busy;
-    storageNote.textContent = storageFailed
-      ? 'Не удалось сохранить на устройстве. Оставь страницу открытой до отправки результата.'
-      : 'Партия сохраняется на устройстве. Вернись в Block Blast, чтобы продолжить.';
   }
   async function start(isRanked: boolean): Promise<void> {
-    if (busy || failed || requestId || (run && run.status !== 'verified')) return;
+    if (busy || failed || drag || requestId || (run && run.status !== 'verified')) return;
     pending = [];
     finished = false;
     run = null;
@@ -397,54 +452,60 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
   }
   function pointermove(event: PointerEvent): void {
     if (drag?.id !== event.pointerId || locked()) return;
-    if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 6 && !drag.moved)
+    if (Math.hypot(event.clientX - drag.start.x, event.clientY - drag.start.y) < 6 && !drag.moved)
       return;
     drag.moved = true;
-    const rect = board.getBoundingClientRect();
-    const unit = (rect.width - 16) / 8;
-    const id = state.tray[selected];
-    const shape = id === null || id === undefined ? undefined : BLOCK_SHAPES[id];
-    if (!shape) return;
+    drag.pointer = { x: event.clientX, y: event.clientY };
+    if (dragFrame === null)
+      dragFrame = requestAnimationFrame(() => {
+        dragFrame = null;
+        drawDrag();
+      });
+  }
+  function drawDrag(): void {
+    if (!drag || locked()) return;
+    const origin = blockDragOrigin(drag.start, drag.pointer, drag, drag.touch);
     ghost.hidden = false;
-    ghost.style.width = `${shape.width * unit}px`;
-    ghost.style.height = `${shape.height * unit}px`;
-    ghost.style.gridTemplateColumns = `repeat(${shape.width}, 1fr)`;
-    ghost.style.gridTemplateRows = `repeat(${shape.height}, 1fr)`;
-    ghost.style.left = `${event.clientX - (shape.width * unit) / 2}px`;
-    ghost.style.top = `${event.clientY - (drag.touch ? shape.height + 0.7 : shape.height / 2) * unit}px`;
-    ghost.replaceChildren(
-      ...shape.cells.map((cell) => {
-        const block = element('i');
-        block.dataset.color = String(((id ?? 0) % 6) + 1);
-        block.style.gridColumn = String(cell.x + 1);
-        block.style.gridRow = String(cell.y + 1);
-        return block;
-      }),
-    );
-    preview = {
-      x: Math.round((event.clientX - rect.left - 8) / unit - shape.width / 2),
-      y: Math.round(
-        (event.clientY - rect.top - 8) / unit -
-          (drag.touch ? shape.height + 0.7 : shape.height / 2),
-      ),
+    ghost.style.transform = `translate3d(${origin.x}px, ${origin.y}px, 0)`;
+    pieces[drag.slot]?.classList.add('dragging');
+    if (!drag.moved) return;
+    const next = {
+      x: Math.round((origin.x - drag.left) / drag.pitchX),
+      y: Math.round((origin.y - drag.top) / drag.pitchY),
     };
-    render();
+    if (preview?.x === next.x && preview.y === next.y) return;
+    preview = next;
+    renderPreview();
   }
   function pointerup(event: PointerEvent): void {
     if (drag?.id !== event.pointerId) return;
+    if (drag.moved) {
+      // Use the release coordinates even when the last animation frame has not run.
+      drag.pointer = { x: event.clientX, y: event.clientY };
+      drawDrag();
+    }
     const target = preview;
     const moved = drag.moved;
-    drag = null;
-    preview = null;
-    ghost.hidden = true;
+    clearDrag();
     if (moved && target) play(target.x, target.y);
-    render();
   }
-  function pointercancel(): void {
+  function clearDrag(): void {
+    if (!drag && dragFrame === null && preview === null) return;
+    if (dragFrame !== null) cancelAnimationFrame(dragFrame);
+    dragFrame = null;
+    const active = drag;
     drag = null;
+    if (active) {
+      const control = pieces[active.slot];
+      control?.classList.remove('dragging');
+      if (control?.hasPointerCapture(active.id)) control.releasePointerCapture(active.id);
+    }
     preview = null;
     ghost.hidden = true;
-    render();
+    renderPreview();
+  }
+  function pointercancel(event: PointerEvent): void {
+    if (drag?.id === event.pointerId) clearDrag();
   }
   function keydown(event: KeyboardEvent): void {
     if (
@@ -455,7 +516,7 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
       event.target instanceof HTMLSelectElement
     )
       return;
-    if (/^[123]$/.test(event.key) && !locked()) {
+    if (/^[123]$/.test(event.key) && !locked() && !drag) {
       selected = Number(event.key) - 1;
       preview = null;
       render();
@@ -479,6 +540,7 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
   }
   function visibility(): void {
     if (document.hidden) {
+      clearDrag();
       save();
       if (run && pending.length && !failed) void sync();
     }
@@ -486,6 +548,9 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
   window.addEventListener('pointermove', pointermove);
   window.addEventListener('pointerup', pointerup);
   window.addEventListener('pointercancel', pointercancel);
+  window.addEventListener('blur', clearDrag);
+  window.addEventListener('resize', clearDrag);
+  window.addEventListener('scroll', clearDrag, true);
   panel.addEventListener('keydown', keydown);
   document.addEventListener('visibilitychange', visibility);
   let restored = false;
@@ -550,19 +615,24 @@ export function mountBlockBlast(host: GameHost): GameAdapter {
   return {
     pause() {
       paused = true;
-      pointercancel();
+      clearDrag();
+      render();
     },
     resume() {
       paused = false;
       render();
     },
     dispose() {
+      clearDrag();
       save();
       disposed = true;
       clearInterval(deliveryTimer);
       window.removeEventListener('pointermove', pointermove);
       window.removeEventListener('pointerup', pointerup);
       window.removeEventListener('pointercancel', pointercancel);
+      window.removeEventListener('blur', clearDrag);
+      window.removeEventListener('resize', clearDrag);
+      window.removeEventListener('scroll', clearDrag, true);
       document.removeEventListener('visibilitychange', visibility);
       panel.remove();
     },

@@ -5,6 +5,8 @@ import { Service2048 } from '../domain/2048.ts';
 import { ArcadeService } from '../domain/arcade.ts';
 import { BlockService } from '../domain/block-blast.ts';
 import { GameBotService } from '../domain/bot.ts';
+import { CommunicationsService } from '../domain/communications.ts';
+import { DoodleService } from '../domain/doodle.ts';
 import { FlappyService } from '../domain/flappy.ts';
 import { GroupService } from '../domain/groups.ts';
 import { MaintenanceService } from '../domain/maintenance.ts';
@@ -15,6 +17,8 @@ import { MINI_APP_URL } from './mini-app-config.ts';
 import { Sql2048Repository } from './sql-2048.ts';
 import { SqlAdminRepository } from './sql-admin.ts';
 import { SqlBlockRepository } from './sql-block-blast.ts';
+import { SqlCommunicationsRepository } from './sql-communications.ts';
+import { SqlDoodleRepository } from './sql-doodle.ts';
 import { SqlFlappyRepository } from './sql-flappy.ts';
 import { SqlMineRepository } from './sql-minesweeper.ts';
 import { SqlArcadeRepository } from './sql-repository.ts';
@@ -24,10 +28,22 @@ import { telegramGateway } from './telegram-gateway.ts';
 export const repository = new SqlArcadeRepository(db);
 export const admin = new SqlAdminRepository(db, () => Date.now());
 export const socialRepository = new SqlSocialRepository(db, repository);
+export const communications = new CommunicationsService(
+  new SqlCommunicationsRepository(db),
+  socialRepository,
+  telegramGateway,
+  () => Date.now(),
+);
 export const groups = new GroupService(socialRepository, telegramGateway, () => Date.now());
 export const flappyRepository = new SqlFlappyRepository(db);
 export const flappy = new FlappyService(
   flappyRepository,
+  { now: () => Date.now(), seed: () => Math.floor(Math.random() * 0x100000000) },
+  groups,
+);
+export const doodleRepository = new SqlDoodleRepository(db);
+export const doodle = new DoodleService(
+  doodleRepository,
   { now: () => Date.now(), seed: () => Math.floor(Math.random() * 0x100000000) },
   groups,
 );
@@ -74,12 +90,21 @@ export const maintenance = new MaintenanceService(
   snakeRepository,
   flappyRepository,
   blockBlastRepository,
+  doodleRepository,
 );
 export async function flushNotifications(): Promise<void> {
   try {
     await maintenance.sweep(3);
   } catch (error) {
     console.warn('notification_sweep_deferred', error instanceof Error ? error.message : 'unknown');
+  }
+  try {
+    await communications.sweep(2);
+  } catch (error) {
+    console.warn(
+      'communication_sweep_deferred',
+      error instanceof Error ? error.message : 'unknown',
+    );
   }
 }
 export const gameBot = new GameBotService(

@@ -7,6 +7,8 @@ import { Service2048 } from '../src/server/domain/2048.ts';
 import { isAdmin } from '../src/server/domain/admin.ts';
 import { ArcadeService } from '../src/server/domain/arcade.ts';
 import { BlockService } from '../src/server/domain/block-blast.ts';
+import { CommunicationsService } from '../src/server/domain/communications.ts';
+import { DoodleService } from '../src/server/domain/doodle.ts';
 import { FlappyService } from '../src/server/domain/flappy.ts';
 import { GroupService } from '../src/server/domain/groups.ts';
 import { MaintenanceService } from '../src/server/domain/maintenance.ts';
@@ -20,6 +22,18 @@ import {
 } from '../src/server/platform/2048-ddl.ts';
 import { installAdmin } from '../src/server/platform/admin-ddl.ts';
 import { BLOCK_BLAST_DDL } from '../src/server/platform/block-blast-ddl.ts';
+import {
+  COMMUNICATION_SCHEMA,
+  COMMUNICATION_TRIGGERS,
+  SUPPORT_CASE_BACKFILL,
+  SUPPORT_THREAD_BACKFILL,
+  SUPPORT_THREAD_COLUMNS,
+} from '../src/server/platform/communications-ddl.ts';
+import {
+  DOODLE_DDL,
+  DOODLE_SOCIAL_COLUMNS,
+  DOODLE_SOCIAL_INDEXES,
+} from '../src/server/platform/doodle-ddl.ts';
 import {
   FLAPPY_DDL,
   FLAPPY_SOCIAL_COLUMNS,
@@ -40,6 +54,8 @@ import {
 import { Sql2048Repository } from '../src/server/platform/sql-2048.ts';
 import { SqlAdminRepository } from '../src/server/platform/sql-admin.ts';
 import { SqlBlockRepository } from '../src/server/platform/sql-block-blast.ts';
+import { SqlCommunicationsRepository } from '../src/server/platform/sql-communications.ts';
+import { SqlDoodleRepository } from '../src/server/platform/sql-doodle.ts';
 import { SqlFlappyRepository } from '../src/server/platform/sql-flappy.ts';
 import { SqlMineRepository } from '../src/server/platform/sql-minesweeper.ts';
 import { SqlArcadeRepository, type SqlDatabase } from '../src/server/platform/sql-repository.ts';
@@ -68,6 +84,24 @@ export function localRepository(file = ':memory:') {
     if (!columns.some((column) => column.name === name))
       database.exec(`ALTER TABLE runs ADD COLUMN ${name} ${definition}`);
   database.exec(SOCIAL_DDL);
+  for (const sql of COMMUNICATION_SCHEMA) database.exec(sql);
+  const threadColumns = database.prepare('PRAGMA table_info(support_threads)').all();
+  for (const [name, definition] of Object.entries(SUPPORT_THREAD_COLUMNS)) {
+    if (threadColumns.some((column) => column.name === name)) continue;
+    database.exec(`ALTER TABLE support_threads ADD COLUMN ${name} ${definition}`);
+    if (name === 'read_order') database.exec(SUPPORT_THREAD_BACKFILL);
+  }
+  const messageColumns = database.prepare('PRAGMA table_info(support_messages)').all();
+  if (!messageColumns.some((column) => column.name === 'thread_id'))
+    database.exec('ALTER TABLE support_messages ADD COLUMN thread_id INTEGER');
+  if (!messageColumns.some((column) => column.name === 'player_name'))
+    database.exec(
+      "ALTER TABLE support_messages ADD COLUMN player_name TEXT NOT NULL DEFAULT 'Игрок'",
+    );
+  for (const sql of SUPPORT_CASE_BACKFILL) database.exec(sql);
+  database.exec('DROP TRIGGER IF EXISTS support_thread_activity');
+  database.exec('DROP TRIGGER IF EXISTS support_message_delivery');
+  for (const sql of COMMUNICATION_TRIGGERS) database.exec(sql);
   const groupColumns = database.prepare('PRAGMA table_info(groups)').all();
   for (const [name, definition] of Object.entries(GROUP_SOCIAL_COLUMNS))
     if (!groupColumns.some((column) => column.name === name))
@@ -81,6 +115,12 @@ export function localRepository(file = ':memory:') {
     if (!flappyColumns.some((column) => column.name === name))
       database.exec(`ALTER TABLE flappy_runs ADD COLUMN ${name} ${definition}`);
   database.exec(FLAPPY_SOCIAL_INDEXES);
+  database.exec(DOODLE_DDL);
+  const doodleColumns = database.prepare('PRAGMA table_info(doodle_runs)').all();
+  for (const [name, definition] of Object.entries(DOODLE_SOCIAL_COLUMNS))
+    if (!doodleColumns.some((column) => column.name === name))
+      database.exec(`ALTER TABLE doodle_runs ADD COLUMN ${name} ${definition}`);
+  database.exec(DOODLE_SOCIAL_INDEXES);
   database.exec(SNAKE_DDL);
   const snakeColumns = database.prepare('PRAGMA table_info(snake_runs)').all();
   for (const [name, definition] of Object.entries(SNAKE_SOCIAL_COLUMNS))
@@ -137,12 +177,23 @@ export function createLocalApi(file: string, ownerPreview = false) {
     async send() {
       return { messageId: 1, ephemeralId: null, date: Math.floor(Date.now() / 1000) };
     },
+    async edit() {},
+    async sendMedia() {
+      return { messageId: 1, ephemeralId: null, date: Math.floor(Date.now() / 1000) };
+    },
     async commands() {},
   };
   const social = new SqlSocialRepository(local.db, local.repository);
+  const communications = new CommunicationsService(
+    new SqlCommunicationsRepository(local.db),
+    social,
+    telegram,
+    () => Date.now(),
+  );
   const mineRepository = new SqlMineRepository(local.db);
   const puzzle2048Repository = new Sql2048Repository(local.db);
   const blockBlastRepository = new SqlBlockRepository(local.db);
+  const doodleRepository = new SqlDoodleRepository(local.db);
   const flappyRepository = new SqlFlappyRepository(local.db);
   const snakeRepository = new SqlSnakeRepository(local.db);
   const groups = new GroupService(social, telegram, () => Date.now());
@@ -162,6 +213,7 @@ export function createLocalApi(file: string, ownerPreview = false) {
     snakeRepository,
     flappyRepository,
     blockBlastRepository,
+    doodleRepository,
   );
   const ready = (async () => {
     await adminReady;
@@ -184,6 +236,11 @@ export function createLocalApi(file: string, ownerPreview = false) {
   const admin = new SqlAdminRepository(local.db, () => Date.now());
   const flappy = new FlappyService(
     flappyRepository,
+    { now: () => Date.now(), seed: () => Math.floor(Math.random() * 0x100000000) },
+    groups,
+  );
+  const doodle = new DoodleService(
+    doodleRepository,
     { now: () => Date.now(), seed: () => Math.floor(Math.random() * 0x100000000) },
     groups,
   );
@@ -243,6 +300,9 @@ export function createLocalApi(file: string, ownerPreview = false) {
         const method = req.url?.split('?')[0]?.split('/').pop();
         let result: unknown;
         switch (method) {
+          case 'getCommunicationLinks':
+            result = await communications.links(player);
+            break;
           case 'getAdminStats':
             result = await admin.stats(player, input);
             break;
@@ -307,6 +367,33 @@ export function createLocalApi(file: string, ownerPreview = false) {
             break;
           case 'getBlockLeaderboard':
             result = await blockBlast.leaderboard(player, input);
+            await flushNotifications();
+            break;
+          case 'createDoodleRun':
+            result = await doodle.create(player, input);
+            await flushNotifications();
+            break;
+          case 'getDoodleRun':
+            result = await doodle.get(player, input);
+            await flushNotifications();
+            break;
+          case 'submitDoodleReplay':
+            {
+              const outcome = await doodle.submit(player, input);
+              result = outcome;
+              if (outcome.status === 'verified') {
+                try {
+                  const run = await doodleRepository.get(outcome.id);
+                  if (run) await maintenance.doodleResult(run);
+                } catch {
+                  /* Retry notification generation independently from saving results. */
+                }
+              }
+              await flushNotifications();
+            }
+            break;
+          case 'getDoodleLeaderboard':
+            result = await doodle.leaderboard(player, input);
             await flushNotifications();
             break;
           case 'createSnakeRun':

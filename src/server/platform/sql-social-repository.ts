@@ -32,7 +32,15 @@ function decodeJob(value: unknown): SocialJob {
     game:
       p.game === undefined
         ? 'tetris'
-        : oneOf(p.game, ['tetris', 'minesweeper', '2048', 'snake', 'flappy', 'block-blast']),
+        : oneOf(p.game, [
+            'tetris',
+            'minesweeper',
+            '2048',
+            'snake',
+            'flappy',
+            'doodle',
+            'block-blast',
+          ]),
     chatId,
     playerId: integer(p.playerId, 1, Number.MAX_SAFE_INTEGER),
     mode: text(p.mode, 1, 32),
@@ -76,15 +84,33 @@ export class SqlSocialRepository implements SocialRepository {
     return rows.map((row) => groupId(object(row).id));
   }
   async observeMember(member: Membership) {
+    await this.writeMembership(
+      member.chatId,
+      member.userId,
+      member.active ? 1 : 0,
+      member.updatedAt,
+    );
+  }
+  async markMemberUnavailable(chatId: number, userId: number, checkedAt: number) {
+    await this.writeMembership(chatId, userId, -1, checkedAt);
+  }
+  // -1 = unavailable, 0 = not a member, 1 = confirmed member. Only 1 is
+  // eligible for group rankings. All outcomes share the 15-minute refresh TTL.
+  private async writeMembership(
+    chatId: number,
+    userId: number,
+    active: -1 | 0 | 1,
+    updatedAt: number,
+  ) {
     await this.db.run(
       `INSERT INTO group_memberships(id,group_id,user_id,active,updated_at) VALUES(:key,:group,:user,:active,:updated)
    ON CONFLICT(id) DO UPDATE SET active=excluded.active,updated_at=excluded.updated_at WHERE excluded.updated_at>=group_memberships.updated_at`,
       {
-        ':key': `${member.chatId}:${member.userId}`,
-        ':group': member.chatId,
-        ':user': member.userId,
-        ':active': Number(member.active),
-        ':updated': member.updatedAt,
+        ':key': `${chatId}:${userId}`,
+        ':group': chatId,
+        ':user': userId,
+        ':active': active,
+        ':updated': updatedAt,
       },
     );
   }
@@ -104,6 +130,7 @@ export class SqlSocialRepository implements SocialRepository {
       UNION SELECT player_id FROM puzzle2048_runs WHERE status='verified'
       UNION SELECT player_id FROM snake_runs WHERE status='verified'
       UNION SELECT player_id FROM flappy_runs WHERE status='verified'
+      UNION SELECT player_id FROM doodle_runs WHERE status='verified'
       UNION SELECT player_id FROM block_blast_runs WHERE status='verified'
     ) SELECT p.player_id FROM players p LEFT JOIN group_memberships m ON m.user_id=p.player_id AND m.group_id=:group
       WHERE m.updated_at IS NULL OR m.updated_at<:since
@@ -130,7 +157,12 @@ export class SqlSocialRepository implements SocialRepository {
   async reserveAnnouncement(chatId: number, now: number, jobId: string) {
     const result = await this.db.run(
       `UPDATE groups SET next_notification_at=CASE WHEN last_notification_job=:job THEN next_notification_at ELSE :next END,last_notification_job=:job WHERE id=:id AND active=1 AND bot_admin=1 AND notifications_enabled=1 AND (next_notification_at<=:now OR last_notification_job=:job) RETURNING id`,
-      { ':id': chatId, ':now': now, ':next': now + 300000, ':job': jobId },
+      {
+        ':id': chatId,
+        ':now': now,
+        ':next': now + 300000,
+        ':job': jobId,
+      },
     );
     return returnedRows(result).length === 1;
   }

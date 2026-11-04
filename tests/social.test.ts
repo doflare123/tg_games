@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { localRepository } from '../scripts/local-api.ts';
 import { DIRECTIONS, type Direction, move2048 } from '../src/games/2048/engine.ts';
 import { blockPlacements, moveBlockBlast } from '../src/games/block-blast/engine.ts';
+import { stepAdventure } from '../src/games/doodle/adventure.ts';
+import { createDoodle, LEGACY_DOODLE_RULESET } from '../src/games/doodle/engine.ts';
 import { stepFlappy } from '../src/games/flappy/engine.ts';
 import { type MineSize, SIZES } from '../src/games/minesweeper/engine.ts';
 import {
@@ -17,6 +19,7 @@ import { Service2048 } from '../src/server/domain/2048.ts';
 import { ArcadeService } from '../src/server/domain/arcade.ts';
 import { BlockService } from '../src/server/domain/block-blast.ts';
 import { type GAME_COMMANDS, GameBotService } from '../src/server/domain/bot.ts';
+import { DoodleService } from '../src/server/domain/doodle.ts';
 import { FlappyService } from '../src/server/domain/flappy.ts';
 import { GroupService } from '../src/server/domain/groups.ts';
 import { MaintenanceService } from '../src/server/domain/maintenance.ts';
@@ -24,14 +27,22 @@ import { decodeManualResult } from '../src/server/domain/manual-result.ts';
 import { MinesweeperService } from '../src/server/domain/minesweeper.ts';
 import type { StoredRun } from '../src/server/domain/repository.ts';
 import { SnakeService } from '../src/server/domain/snake.ts';
-import type { SendMessage, TelegramGateway } from '../src/server/domain/telegram.ts';
+import {
+  MembershipUnavailableError,
+  type SendMessage,
+  type TelegramGateway,
+} from '../src/server/domain/telegram.ts';
 import { Sql2048Repository } from '../src/server/platform/sql-2048.ts';
 import { SqlBlockRepository } from '../src/server/platform/sql-block-blast.ts';
+import { SqlDoodleRepository } from '../src/server/platform/sql-doodle.ts';
 import { SqlFlappyRepository } from '../src/server/platform/sql-flappy.ts';
 import { SqlManualResultRepository } from '../src/server/platform/sql-manual-results.ts';
 import { SqlMineRepository } from '../src/server/platform/sql-minesweeper.ts';
 import { SqlSnakeRepository } from '../src/server/platform/sql-snake.ts';
 import { SqlSocialRepository } from '../src/server/platform/sql-social-repository.ts';
+import { DOODLE_RULESET as CURRENT_DOODLE_RULESET } from '../src/shared/doodle.ts';
+import { decodeAdventureState } from '../src/shared/doodle-adventure.ts';
+import * as doodlePolicy from '../src/shared/doodle-policy.ts';
 import { AppError } from '../src/shared/errors.ts';
 import { parseLaunch } from '../src/shared/launch.ts';
 
@@ -41,6 +52,7 @@ afterEach(() => {
   for (const h of handles.splice(0)) h.close();
 });
 async function setup() {
+  vi.spyOn(doodlePolicy, 'isDoodleRankedEnabled').mockReturnValue(true);
   const local = localRepository();
   handles.push(local);
   let now = Date.UTC(2026, 9, 30);
@@ -66,6 +78,10 @@ async function setup() {
       sent.push(input);
       return { messageId: null, ephemeralId: nextId++, date: Math.floor(now / 1000) };
     },
+    async edit() {},
+    async sendMedia() {
+      return { messageId: null, ephemeralId: nextId++, date: Math.floor(now / 1000) };
+    },
     async commands(input, chatId) {
       commands.push({ ...(chatId === undefined ? {} : { chatId }), commands: input });
     },
@@ -85,6 +101,8 @@ async function setup() {
     { now: () => now, seed: () => 123 },
     groups,
   );
+  const doodleRepository = new SqlDoodleRepository(local.db);
+  const doodle = new DoodleService(doodleRepository, { now: () => now, seed: () => 123 }, groups);
   const flappyRepository = new SqlFlappyRepository(local.db);
   const flappy = new FlappyService(flappyRepository, { now: () => now, seed: () => 123 }, groups);
   const snakeRepository = new SqlSnakeRepository(local.db);
@@ -106,6 +124,7 @@ async function setup() {
     snakeRepository,
     flappyRepository,
     blockBlastRepository,
+    doodleRepository,
   );
   const bot = new GameBotService(repository, groups, telegram, () => now, 'https://arcade.test/');
   async function verified(
@@ -160,6 +179,8 @@ async function setup() {
     snake,
     flappyRepository,
     flappy,
+    doodleRepository,
+    doodle,
     blockBlast,
     blockBlastRepository,
     maintenance,
@@ -176,6 +197,195 @@ async function setup() {
     },
   };
 }
+describe('unavailable group memberships', () => {
+  it('makes durable progress past a full batch of unavailable accounts', async () => {
+    const s = await setup();
+    for (let id = 10; id < 40; id++) await s.verified(`batch-${id}`, id, id);
+    await s.repository.upsertGroup({ id: -200, title: 'B', active: true, botAdmin: true });
+    const lookup = vi
+      .spyOn(s.telegram, 'member')
+      .mockRejectedValue(new MembershipUnavailableError());
+    expect((await s.groups.synchronize(-200)).state).toBe('pending');
+    expect(lookup).toHaveBeenCalledTimes(24);
+    expect((await s.groups.synchronize(-200)).state).toBe('complete');
+    expect(lookup).toHaveBeenCalledTimes(30);
+    expect((await s.groups.synchronize(-200)).state).toBe('complete');
+    expect(lookup).toHaveBeenCalledTimes(30);
+  });
+  it.each(['tetris', '2048', 'snake', 'minesweeper', 'flappy', 'block-blast'] as const)(
+    'keeps %s results globally and delivers other members records without bans',
+    async (game) => {
+      const s = await setup();
+      await s.groups.configure(s.player, { groupId: -100, enabled: true });
+      s.advance(1);
+      const record = async (id: string, playerId: number) => {
+        if (game === 'tetris') return s.verified(id, playerId, playerId * 100);
+        if (game === '2048') return puzzleResult(s, id, playerId, playerId * 100);
+        if (game === 'snake') return snakeResult(s, id, playerId, playerId * 10);
+        if (game === 'flappy') return flappyResult(s, id, playerId, playerId * 10);
+        if (game === 'block-blast') return blockBlastResult(s, id, playerId, playerId * 100);
+        return mineResult(s, id, playerId, 30000 - playerId * 1000);
+      };
+      await record('unavailable-rival', 2);
+      s.advance(16 * 60_000);
+      const member = s.telegram.member.bind(s.telegram);
+      s.telegram.member = async (chat, user) => {
+        if (chat === -100 && user === 2) throw new MembershipUnavailableError();
+        return member(chat, user);
+      };
+      await record('healthy-player', 1);
+      await s.maintenance.sweep();
+      await s.maintenance.sweep();
+      expect(s.sent).toHaveLength(1);
+      expect(s.sent[0]?.text).toContain('P1');
+      expect(s.sent[0]?.text).toContain('Первый рекорд группы');
+      expect((await s.groups.synchronize(-100)).state).toBe('complete');
+      expect(
+        await s.local.db.get(
+          'SELECT active FROM group_memberships WHERE group_id=-100 AND user_id=2',
+        ),
+      ).toEqual({ active: -1 });
+      expect(await s.repository.membersToRefresh(-100, s.now() - 15 * 60_000, 25)).not.toContain(2);
+      expect(
+        await s.local.db.get("SELECT count(*) AS n FROM sqlite_master WHERE name='ranking_blocks'"),
+      ).toEqual({ n: 0 });
+      const board = async (groupId?: number) => {
+        const input = { period: 'all' as const, ...(groupId === undefined ? {} : { groupId }) };
+        if (game === 'tetris')
+          return s.arcade.leaderboard(s.player, { mode: 'marathon', ...input });
+        if (game === '2048') return s.puzzle.leaderboard(s.player, input);
+        if (game === 'snake') return s.snake.leaderboard(s.player, { size: 16, ...input });
+        if (game === 'flappy') return s.flappy.leaderboard(s.player, input);
+        if (game === 'block-blast') return s.blockBlast.leaderboard(s.player, input);
+        return s.minesweeper.leaderboard(s.player, { size: '9x9', ...input });
+      };
+      expect((await board()).entries.map((entry) => entry.playerId)).toEqual([2, 1]);
+      expect((await board(-100)).entries.map((entry) => entry.playerId)).toEqual([1]);
+    },
+  );
+
+  it('persists quarantine across service reloads and restores historical results after TTL silently', async () => {
+    const s = await setup();
+    await s.verified('mine', 1, 100);
+    await s.verified('rival', 2, 200);
+    s.advance(16 * 60_000);
+    const original = s.telegram.member.bind(s.telegram);
+    const lookup = vi.spyOn(s.telegram, 'member').mockImplementation(async (chat, user) => {
+      if (user === 2) throw new MembershipUnavailableError();
+      return original(chat, user);
+    });
+    expect((await s.groups.synchronize(-100)).state).toBe('complete');
+    lookup.mockClear();
+    const reloaded = new GroupService(
+      new SqlSocialRepository(s.local.db, s.local.repository),
+      s.telegram,
+      s.now,
+    );
+    expect((await reloaded.synchronize(-100)).state).toBe('complete');
+    expect(lookup).not.toHaveBeenCalled();
+    s.advance(15 * 60_000 + 1);
+    lookup.mockImplementation(original);
+    expect((await reloaded.synchronize(-100)).state).toBe('complete');
+    expect(lookup).toHaveBeenCalledWith(-100, 2);
+    expect(await s.local.db.get('SELECT active FROM group_memberships WHERE user_id=2')).toEqual({
+      active: 1,
+    });
+    const board = await s.arcade.leaderboard(s.player, {
+      mode: 'marathon',
+      period: 'all',
+      groupId: -100,
+    });
+    expect(board.entries.map((entry) => entry.playerId)).toEqual([2, 1]);
+    expect(await s.local.db.get('SELECT count(*) AS n FROM social_jobs')).toEqual({ n: 0 });
+    expect(s.sent).toHaveLength(0);
+  });
+
+  it.each(['access', 'chat_member'] as const)(
+    'recovers immediately through %s and only affects one group',
+    async (recovery) => {
+      const s = await setup();
+      await s.repository.upsertGroup({ id: -200, title: 'B', active: true, botAdmin: true });
+      await s.repository.observeMember({
+        chatId: -200,
+        userId: 2,
+        active: true,
+        updatedAt: s.now(),
+      });
+      const original = s.telegram.member.bind(s.telegram);
+      s.telegram.member = async (chat, user) => {
+        if (chat === -100 && user === 2) throw new MembershipUnavailableError();
+        return original(chat, user);
+      };
+      await expect(s.groups.access({ id: 2, name: 'P2' }, -100)).rejects.toMatchObject({
+        code: 'UNAUTHORIZED',
+      });
+      expect((await s.groups.list({ id: 2, name: 'P2' })).map((group) => group.id)).toEqual([-200]);
+      s.telegram.member = original;
+      s.advance(1000);
+      if (recovery === 'access') await s.groups.access({ id: 2, name: 'P2' }, -100);
+      else
+        await s.bot.membership({
+          chat: { id: -100, type: 'supergroup' },
+          date: Math.floor(s.now() / 1000),
+          new_chat_member: { status: 'member', user: { id: 2 } },
+        });
+      expect(
+        await s.local.db.all(
+          'SELECT group_id,active FROM group_memberships WHERE user_id=2 ORDER BY group_id',
+        ),
+      ).toEqual([
+        { group_id: -200, active: 1 },
+        { group_id: -100, active: 1 },
+      ]);
+    },
+  );
+
+  it('suppresses an unavailable recipients queued job without blocking other recipients', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const invalid = await puzzleResult(s, 'queued-invalid', 2, 200);
+    await s.maintenance.result2048(invalid);
+    const member = s.telegram.member.bind(s.telegram);
+    s.telegram.member = async (chat, user) => {
+      if (user === 2) throw new MembershipUnavailableError();
+      return member(chat, user);
+    };
+    s.advance(16 * 60_000);
+    const healthy = await puzzleResult(s, 'queued-healthy', 1, 100);
+    await s.maintenance.result2048(healthy);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('P1');
+    expect(
+      await s.local.db.get('SELECT status FROM social_jobs WHERE id=:id', {
+        ':id': `record:${invalid.id}:-100`,
+      }),
+    ).toEqual({ status: 'suppressed' });
+    expect((await s.puzzleRepository.get(invalid.id))?.status).toBe('verified');
+  });
+
+  it('does not hide storage failures or overwrite a newer successful observation', async () => {
+    const s = await setup();
+    await s.verified('rival', 2, 200);
+    s.advance(16 * 60_000);
+    s.telegram.member = async () => {
+      throw new MembershipUnavailableError();
+    };
+    vi.spyOn(s.repository, 'markMemberUnavailable').mockRejectedValueOnce(
+      new Error('Database unavailable'),
+    );
+    expect((await s.groups.synchronize(-100)).state).toBe('failed');
+    s.telegram.member = async (chatId, userId) => {
+      s.advance(1);
+      await s.repository.observeMember({ chatId, userId, active: true, updatedAt: s.now() });
+      throw new MembershipUnavailableError();
+    };
+    expect((await s.groups.synchronize(-100)).state).toBe('complete');
+    expect(await s.local.db.get('SELECT active FROM group_memberships WHERE user_id=2')).toEqual({
+      active: 1,
+    });
+  });
+});
 describe('group access and board scope', () => {
   it.each(['2048', 'snake', 'minesweeper', 'flappy', 'block-blast'] as const)(
     'filters %s records by current membership and checks access on every request',
@@ -1318,6 +1528,17 @@ describe('native private game commands', () => {
     expect(s.commands[0]?.commands.some((c) => c.command === 'game_block_blast')).toBe(true);
     expect(s.commands[0]?.commands.every((c) => /^[a-z0-9_]{1,32}$/.test(c.command))).toBe(true);
   });
+  it('registers a valid Doodle Jump command and opens its direct game link', async () => {
+    const s = await setup();
+    await s.bot.message({ ...payload, text: '/game_doodle@arcade_bot' });
+    expect(s.sent[0]?.reply_markup?.inline_keyboard[0]?.[0]).toEqual({
+      text: 'Играть',
+      url: 'https://t.me/arcade_bot?startapp=game_doodle',
+    });
+    await s.bot.configure();
+    expect(s.commands[0]?.commands.some((c) => c.command === 'game_doodle')).toBe(true);
+    expect(s.commands[0]?.commands.every((c) => /^[a-z0-9_]{1,32}$/.test(c.command))).toBe(true);
+  });
   it('opens Minesweeper directly and registers its game command', async () => {
     const s = await setup();
     await s.bot.message({ ...payload, text: '/game_minesweeper@arcade_bot' });
@@ -2119,4 +2340,308 @@ describe('Block Blast record announcements', () => {
     for (let i = 0; i < 5; i++) await s.maintenance.sweep();
     expect(s.sent).toHaveLength(1);
   });
+});
+
+async function doodleResult(
+  s: Awaited<ReturnType<typeof setup>>,
+  id: string,
+  playerId: number,
+  score: number,
+) {
+  const created = await s.doodle.create(
+    { id: playerId, name: `P${playerId}` },
+    { requestId: `doodle_fixture_${id}` },
+  );
+  const original = await s.doodleRepository.get(created.id);
+  if (!original || original.ruleset !== CURRENT_DOODLE_RULESET)
+    throw new Error('Missing doodle fixture');
+  await s.doodleRepository.save(
+    {
+      ...original,
+      revision: 1,
+      status: 'verified',
+      state: { ...original.state, score, status: 'over', reason: 'fall' },
+      verifiedAt: s.now(),
+    },
+    0,
+  );
+  const stored = await s.doodleRepository.get(created.id);
+  if (!stored) throw new Error('Missing doodle result');
+  return stored;
+}
+
+describe('Doodle Jump record announcements', () => {
+  it('delivers pre-update classic jobs against the legacy board, separate from new physics', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const base = await s.doodle.create(s.player, { requestId: 'legacy-doodle-notify-001' });
+    const original = await s.doodleRepository.get(base.id);
+    if (!original) throw new Error('Missing run');
+    const legacy = await s.doodleRepository.create({
+      ...original,
+      id: 'doodle:legacy:announcement',
+      ruleset: LEGACY_DOODLE_RULESET,
+      state: createDoodle(123, LEGACY_DOODLE_RULESET),
+    });
+    if (legacy.ruleset !== LEGACY_DOODLE_RULESET) throw new Error('Missing legacy ruleset');
+    await s.doodleRepository.save(
+      {
+        ...legacy,
+        revision: 1,
+        status: 'verified',
+        state: { ...legacy.state, score: 100, status: 'over' },
+        verifiedAt: s.now(),
+      },
+      0,
+    );
+    const stored = await s.doodleRepository.get(legacy.id);
+    if (!stored) throw new Error('Missing legacy result');
+    await s.maintenance.doodleResult(stored);
+    const newer = await doodleResult(s, 'version-two', 1, 1000);
+    await s.doodleRepository.processed(newer.id);
+    await s.local.db.run(
+      "UPDATE social_jobs SET payload=json_set(payload,'$.mode','classic') WHERE id=:id",
+      { ':id': `record:${legacy.id}:-100` },
+    );
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('Doodle Jump · 100 очков');
+    expect((await s.doodle.leaderboard(s.player, { period: 'all' })).me?.score).toBe(1000);
+    expect(
+      (await s.doodle.leaderboard(s.player, { period: 'all', ruleset: LEGACY_DOODLE_RULESET })).me
+        ?.score,
+    ).toBe(100);
+  });
+
+  it('delivers an actual server-replayed result from the durable queue once', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    let run = await s.doodle.create(s.player, { requestId: 'doodle-real-replay-001' });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    const state = decodeAdventureState(run.state);
+    while (state.status === 'playing') {
+      const from = state.ticks;
+      while (state.status === 'playing' && state.ticks - from < 100)
+        stepAdventure(state, { direction: 1, shooting: true, aim: 0 });
+      s.advance(Math.ceil(((state.ticks - from) * 1000) / 60));
+      run = await s.doodle.submit(s.player, {
+        runId: run.id,
+        revision: run.revision,
+        untilTick: state.ticks,
+        events: from === 0 ? [{ tick: 0, direction: 1, shooting: true, aim: 0 }] : [],
+      });
+    }
+    expect((await s.doodleRepository.pendingResults(3))[0]?.id).toBe(run.id);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain(`Doodle Jump · ${state.score} очков`);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+  });
+
+  it('announces the first score once and links back to Doodle Jump', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const run = await doodleResult(s, 'first', 1, 10);
+    await s.maintenance.doodleResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('Doodle Jump · 10 очков');
+    expect(s.sent[0]?.reply_markup?.inline_keyboard[0]?.[0]).toEqual({
+      text: '🎮 Побить рекорд',
+      url: 'https://t.me/arcade_bot?startapp=game_doodle',
+    });
+    await s.maintenance.doodleResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(await s.doodleRepository.pendingResults(3)).toEqual([]);
+  });
+  it('compares only group members, announces an overtake and a leader improvement', async () => {
+    const s = await setup();
+    await doodleResult(s, 'rival', 2, 100);
+    await doodleResult(s, 'outsider', 3, 1000);
+    s.members.set(3, { active: false, admin: false });
+    await s.repository.observeMember({
+      chatId: -100,
+      userId: 3,
+      active: false,
+      updatedAt: s.now(),
+    });
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const run = await doodleResult(s, 'winner', 1, 200);
+    await s.maintenance.doodleResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('Обошёл(ла) P2: больше на 100 очков');
+    expect((await s.doodle.leaderboard(s.player, { period: 'all' })).me?.rank).toBe(2);
+    s.advance(300001);
+    await s.maintenance.doodleResult(await doodleResult(s, 'improved', 1, 300));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(2);
+    expect(s.sent[1]?.text).toContain('Улучшен рекорд группы: больше на 100 очков');
+  });
+  it('ignores zero scores, same-place personal improvements, ties and results before enabling', async () => {
+    const s = await setup();
+    await doodleResult(s, 'leader', 2, 1000);
+    await doodleResult(s, 'second', 1, 100);
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    await s.maintenance.doodleResult(await doodleResult(s, 'personal', 1, 200));
+    await s.maintenance.doodleResult(await doodleResult(s, 'tie', 2, 1000));
+    await s.maintenance.doodleResult(await doodleResult(s, 'zero', 3, 0));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+  });
+  it('shares the cross-game cooldown and delivers a deferred record after five minutes', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.mineResult(await mineResult(s, 'before-doodle', 1, 10000));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    const run = await doodleResult(s, 'cooldown', 1, 100);
+    await s.maintenance.doodleResult(run);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(
+      await s.local.db.get('SELECT status,error FROM social_jobs WHERE id=:id', {
+        ':id': `record:${run.id}:-100`,
+      }),
+    ).toEqual({ status: 'pending', error: 'Group cooldown' });
+    s.advance(300001);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(2);
+    expect(s.sent[1]?.text).toContain('Doodle Jump');
+  });
+  it('orders snapshots by completion and suppresses superseded records before sending', async () => {
+    const s = await setup();
+    const early = await s.doodle.create(s.player, { requestId: 'doodle_early_12345678' });
+    await doodleResult(s, 'later-start', 2, 100);
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    const original = await s.doodleRepository.get(early.id);
+    if (!original || original.ruleset !== CURRENT_DOODLE_RULESET)
+      throw new Error('Missing fixture');
+    await s.doodleRepository.save(
+      {
+        ...original,
+        revision: 1,
+        status: 'verified',
+        state: { ...original.state, score: 200, status: 'over', reason: 'fall' },
+        verifiedAt: s.now(),
+      },
+      0,
+    );
+    const a = await s.doodleRepository.get(early.id);
+    if (!a) throw new Error('Missing result');
+    expect(a.verifiedOrder).toBe(2);
+    const before = await s.doodleRepository.leaderboard(s.player, 'all', 0, {
+      groupId: -100,
+      maxResultOrder: 1,
+    });
+    expect(before.me).toBeNull();
+    expect(before.entries[0]?.playerId).toBe(2);
+    await s.maintenance.doodleResult(a);
+    await s.maintenance.doodleResult(await doodleResult(s, 'new-winner', 3, 300));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]?.text).toContain('P3');
+  });
+  it('retries Telegram errors and suppresses delivery after a player leaves or notifications are disabled', async () => {
+    const s = await setup();
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.doodleResult(await doodleResult(s, 'retry', 1, 100));
+    const send = s.telegram.send;
+    s.telegram.send = vi
+      .fn()
+      .mockRejectedValueOnce({ code: 429, parameters: { retry_after: 2 } })
+      .mockImplementation(send);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    s.advance(2100);
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    s.advance(300001);
+    await s.maintenance.doodleResult(await doodleResult(s, 'left', 1, 200));
+    s.members.set(1, { active: false, admin: false });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+    s.members.set(1, { active: true, admin: true });
+    await s.maintenance.doodleResult(await doodleResult(s, 'off', 1, 300));
+    await s.groups.configure(s.player, { groupId: -100, enabled: false });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+  });
+  it('discovers doodle-only players in new groups without broadcasting old records', async () => {
+    const s = await setup();
+    await doodleResult(s, 'history', 2, 100);
+    await s.repository.upsertGroup({
+      id: -200,
+      title: 'Новая группа',
+      active: true,
+      botAdmin: true,
+    });
+    expect(await s.repository.membersToRefresh(-200, s.now() - 1000, 25)).toContain(2);
+    await s.groups.synchronize(-200);
+    expect(
+      (await s.doodleRepository.leaderboard(s.player, 'all', 0, { groupId: -200 })).entries[0]
+        ?.playerId,
+    ).toBe(2);
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -200, enabled: true });
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+  });
+  it('defers incomplete membership verification and excludes records below the group top ten', async () => {
+    const s = await setup();
+    for (let id = 2; id <= 12; id++) {
+      s.members.set(id, { active: true, admin: false });
+      await doodleResult(s, `rival-${id}`, id, id * 10);
+    }
+    s.advance(1);
+    await s.groups.configure(s.player, { groupId: -100, enabled: true });
+    await s.maintenance.doodleResult(await doodleResult(s, 'outside-top', 1, 10));
+    await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(0);
+    const winner = await doodleResult(s, 'after-outage', 1, 500);
+    s.advance(16 * 60000);
+    const member = s.telegram.member;
+    s.telegram.member = async (chat, id) => {
+      if (id === 2) throw new Error('Telegram outage');
+      return member(chat, id);
+    };
+    await expect(s.maintenance.doodleResult(winner)).rejects.toMatchObject({ code: 'UNAVAILABLE' });
+    expect((await s.doodleRepository.get(winner.id))?.socialProcessed).toBe(false);
+    s.telegram.member = member;
+    for (let i = 0; i < 5; i++) await s.maintenance.sweep();
+    expect(s.sent).toHaveLength(1);
+  });
+});
+
+it('suppresses queued Doodle records and does not generate new announcements when its ranking is disabled', async () => {
+  const s = await setup();
+  await s.groups.configure(s.player, { groupId: -100, enabled: true });
+  const queued = await doodleResult(s, 'disabled-queued', 1, 100);
+  await s.maintenance.doodleResult(queued);
+  const pending = await doodleResult(s, 'disabled-pending', 2, 200);
+  vi.spyOn(doodlePolicy, 'isDoodleRankedEnabled').mockReturnValue(false);
+  await s.maintenance.sweep();
+  expect(s.sent).toHaveLength(0);
+  expect(
+    await s.local.db.get('SELECT status FROM social_jobs WHERE id=:id', {
+      ':id': `record:${queued.id}:-100`,
+    }),
+  ).toEqual({ status: 'suppressed' });
+  expect((await s.doodleRepository.get(pending.id))?.socialProcessed).toBe(true);
+  expect(
+    await s.local.db.get('SELECT id FROM social_jobs WHERE id=:id', {
+      ':id': `record:${pending.id}:-100`,
+    }),
+  ).toBeUndefined();
+  await s.maintenance.result(await s.verified('other-game-still-enabled', 1, 500));
+  await s.maintenance.sweep();
+  expect(s.sent).toHaveLength(1);
 });

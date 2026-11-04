@@ -136,7 +136,7 @@ export class SqlAdminRepository {
     if (!Array.isArray(rows) || rows.length !== weeks + 1)
       throw new Error('Invalid statistics windows');
     const totals = await this.db.get(
-      `SELECT (SELECT count(*) FROM (${ADMIN_PLAYERS})) AS players,(SELECT count(*) FROM groups) AS groups,(SELECT count(*) FROM groups WHERE active=1) AS activeGroups,(SELECT count(*) FROM ranking_blocks) AS blocked,(SELECT count(*) FROM social_jobs WHERE status IN ('pending','running')) AS pendingJobs`,
+      `SELECT (SELECT count(*) FROM (${ADMIN_PLAYERS})) AS players,(SELECT count(*) FROM groups) AS groups,(SELECT count(*) FROM groups WHERE active=1) AS activeGroups,(SELECT count(*) FROM ranking_blocks) AS blocked,((SELECT count(*) FROM social_jobs WHERE status IN ('pending','running'))+(SELECT count(*) FROM communication_jobs WHERE status IN ('pending','running'))) AS pendingJobs`,
     );
     const games = await this.db.all(
       `WITH attempts AS (${ADMIN_ATTEMPTS}) SELECT game,count(*) AS attempts,sum(ranked) AS results,count(DISTINCT player_id) AS players FROM attempts WHERE at>=:start AND at<:now GROUP BY game ORDER BY attempts DESC,game`,

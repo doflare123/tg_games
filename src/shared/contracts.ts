@@ -11,6 +11,8 @@ import type {
   AdminTable,
 } from './admin.ts';
 import type { BlockBoard, BlockMoves, BlockRun } from './block-blast.ts';
+import type { DoodleBoard, DoodleReplay, DoodleRuleset, DoodleRun } from './doodle.ts';
+import { isDoodleRankedEnabled } from './doodle-policy.ts';
 import type { FlappyBoard, FlappyReplay, FlappyRun } from './flappy.ts';
 import type { GroupView } from './groups.ts';
 import type { MineLeaderboard, MineResult, MineResultInput } from './minesweeper.ts';
@@ -20,7 +22,16 @@ export interface Player {
   name: string;
 }
 export interface GameInfo {
-  id: 'tetris' | 'minesweeper' | '2048' | 'snake' | 'flappy' | 'block-blast' | 'mario' | 'doom';
+  id:
+    | 'tetris'
+    | 'minesweeper'
+    | '2048'
+    | 'snake'
+    | 'flappy'
+    | 'doodle'
+    | 'block-blast'
+    | 'mario'
+    | 'doom';
   title: string;
   subtitle: string;
   available: boolean;
@@ -61,6 +72,13 @@ export const CATALOG: readonly GameInfo[] = [
     subtitle: 'Три фигуры · собирай линии · освобождай поле',
     available: true,
     ranked: true,
+  },
+  {
+    id: 'doodle',
+    title: 'Doodle Jump',
+    subtitle: 'Свободная игра · монстры, джетпак и батут',
+    available: true,
+    ranked: isDoodleRankedEnabled(),
   },
   {
     id: 'flappy',
@@ -108,6 +126,10 @@ export interface LeaderboardView {
   me: LeaderboardEntry | null;
 }
 export interface Endpoints {
+  getCommunicationLinks: {
+    input: Record<string, never>;
+    output: { feedback: string; owner: string | null; dialogBase: string | null };
+  };
   createBlockRun: { input: { requestId: string }; output: BlockRun };
   getBlockRun: { input: { runId: string }; output: BlockRun };
   submitBlockMoves: { input: BlockMoves; output: BlockRun };
@@ -116,6 +138,13 @@ export interface Endpoints {
   getAdminRows: { input: { table: AdminTable; page: number; search: string }; output: AdminPage };
   previewAdminAction: { input: { action: AdminAction; target: string }; output: AdminPreview };
   applyAdminAction: { input: AdminMutation; output: { id: string } };
+  createDoodleRun: { input: { requestId: string }; output: DoodleRun };
+  getDoodleRun: { input: { runId: string }; output: DoodleRun };
+  submitDoodleReplay: { input: DoodleReplay; output: DoodleRun };
+  getDoodleLeaderboard: {
+    input: { period: Period; groupId?: number; ruleset?: DoodleRuleset };
+    output: DoodleBoard;
+  };
   createFlappyRun: { input: { requestId: string }; output: FlappyRun };
   getFlappyRun: { input: { runId: string }; output: FlappyRun };
   submitFlappyReplay: { input: FlappyReplay; output: FlappyRun };

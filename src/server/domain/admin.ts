@@ -1,7 +1,7 @@
 import type { Player } from '../../shared/contracts.ts';
 import { AppError } from '../../shared/errors.ts';
 
-const OWNER_ID = 930852883;
+export const OWNER_ID = 930852883;
 export function isAdmin(player: Player): boolean {
   return player.id === OWNER_ID;
 }

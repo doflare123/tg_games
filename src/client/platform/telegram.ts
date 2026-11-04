@@ -3,7 +3,17 @@ interface CloudError {
   type?: string;
   parameters?: Record<string, unknown>;
 }
-interface TelegramApp {
+export interface TelegramOrientation {
+  isStarted: boolean;
+  beta: number | null;
+  gamma: number | null;
+  start(
+    params: { refresh_rate: number; need_absolute: boolean },
+    callback: (started: boolean) => void,
+  ): void;
+  stop(): void;
+}
+export interface TelegramApp {
   initData: string;
   initDataUnsafe: { start_param?: string };
   Serverless?: {
@@ -16,6 +26,9 @@ interface TelegramApp {
   ready(): void;
   expand(): void;
   disableVerticalSwipes?(): void;
+  DeviceOrientation?: TelegramOrientation;
+  onEvent?(event: string, handler: () => void): void;
+  offEvent?(event: string, handler: () => void): void;
   BackButton?: {
     show(): void;
     hide(): void;

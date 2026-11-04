@@ -2,30 +2,49 @@ import type { LeaderboardView, Player } from '../../shared/contracts.ts';
 import { AppError, integer, object } from '../../shared/errors.ts';
 import { type GroupView, groupId } from '../../shared/groups.ts';
 import type { SocialRepository } from './social-repository.ts';
-import type { TelegramGateway } from './telegram.ts';
+import {
+  MembershipUnavailableError,
+  type TelegramGateway,
+  type TelegramMember,
+} from './telegram.ts';
 export class GroupService {
   constructor(
     readonly repository: SocialRepository,
     private readonly telegram: TelegramGateway,
     private readonly now: () => number,
   ) {}
+  private async refreshMember(id: number, userId: number): Promise<TelegramMember | null> {
+    // A slower request must not replace a newer membership observation.
+    const checkedAt = this.now();
+    let member: TelegramMember;
+    try {
+      member = await this.telegram.member(id, userId);
+    } catch (error) {
+      if (!(error instanceof MembershipUnavailableError)) throw error;
+      await this.repository.markMemberUnavailable(id, userId, checkedAt);
+      return null;
+    }
+    await this.repository.observeMember({
+      chatId: id,
+      userId,
+      active: member.active,
+      updatedAt: checkedAt,
+    });
+    return member;
+  }
   async access(player: Player, id: number, requireAdmin = false): Promise<GroupView> {
     const group = await this.repository.group(groupId(id));
     if (!group?.active) throw new AppError('NOT_FOUND', 'Группа не подключена к Arcade');
     if (!group.botAdmin)
       throw new AppError('UNAVAILABLE', 'Для группового рейтинга сделай бота администратором');
-    let member: Awaited<ReturnType<TelegramGateway['member']>>;
+    let member: TelegramMember | null;
     try {
-      member = await this.telegram.member(id, player.id);
+      member = await this.refreshMember(id, player.id);
     } catch {
       throw new AppError('UNAVAILABLE', 'Не удалось проверить участие в группе');
     }
-    await this.repository.observeMember({
-      chatId: id,
-      userId: player.id,
-      active: member.active,
-      updatedAt: this.now(),
-    });
+    if (member === null)
+      throw new AppError('UNAUTHORIZED', 'Telegram не подтвердил участие в этой группе');
     if (!member.active) throw new AppError('UNAUTHORIZED', 'Ты больше не состоишь в этой группе');
     if (requireAdmin && !member.admin)
       throw new AppError('UNAUTHORIZED', 'Настройку меняет только администратор группы');
@@ -74,13 +93,7 @@ export class GroupService {
       await Promise.all(
         batch.slice(start, start + 4).map(async (userId) => {
           try {
-            const member = await this.telegram.member(id, userId);
-            await this.repository.observeMember({
-              chatId: id,
-              userId,
-              active: member.active,
-              updatedAt: this.now(),
-            });
+            await this.refreshMember(id, userId);
           } catch {
             failed = true;
           }

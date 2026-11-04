@@ -1,10 +1,12 @@
 import type { AdminAction, AdminTable } from '../../shared/admin.ts';
+import { SUPPORT_THREAD_SELECT } from './communications-ddl.ts';
 
 export const ADMIN_RUNS = [
   ['runs', 'tetris', 'created_at', 'verified'],
   ['puzzle2048_runs', '2048', 'created_at', 'verified'],
   ['snake_runs', 'snake', 'created_at', 'verified'],
   ['flappy_runs', 'flappy', 'created_at', 'verified'],
+  ['doodle_runs', 'doodle', 'created_at', 'verified'],
   ['block_blast_runs', 'block-blast', 'created_at', 'verified'],
   ['minesweeper_runs', 'minesweeper', 'started_at', 'won'],
 ] as const;
@@ -20,7 +22,29 @@ export interface TableDefinition {
   order: string;
 }
 const runColumns = ['id', 'player_id', 'player_name', 'status', 'score', 'ruleset', 'created_at'];
+const recordJobColumns = [
+  'id',
+  'status',
+  'due_at',
+  'expires_at',
+  'attempts',
+  'lease_until',
+  'error',
+];
 export const ADMIN_VIEWS: Record<AdminTable, TableDefinition> = {
+  support_threads: {
+    source: `(${SUPPORT_THREAD_SELECT})`,
+    columns: [
+      'id',
+      'player_id',
+      'player_name',
+      'thread_status',
+      'closed',
+      'created_at',
+      'updated_at',
+    ],
+    order: 'updated_at DESC,id DESC',
+  },
   players: {
     source: `(${ADMIN_PLAYERS})`,
     columns: ['id', 'name', 'first_seen', 'last_seen', 'attempts'],
@@ -61,6 +85,7 @@ export const ADMIN_VIEWS: Record<AdminTable, TableDefinition> = {
     order: 'created_at DESC,id',
   },
   flappy_runs: { source: 'flappy_runs', columns: runColumns, order: 'created_at DESC,id' },
+  doodle_runs: { source: 'doodle_runs', columns: runColumns, order: 'created_at DESC,id' },
   minesweeper_runs: {
     source: 'minesweeper_runs',
     columns: ['id', 'player_id', 'player_name', 'status', 'size', 'elapsed_ms', 'started_at'],
@@ -87,13 +112,28 @@ export const ADMIN_VIEWS: Record<AdminTable, TableDefinition> = {
     order: 'created_at DESC,id',
   },
   group_memberships: {
-    source: 'group_memberships',
-    columns: ['id', 'group_id', 'user_id', 'active', 'updated_at'],
+    source: `(SELECT *,CASE active WHEN -1 THEN 'unavailable' WHEN 1 THEN 'member' ELSE 'not_member' END AS membership_state FROM group_memberships)`,
+    columns: ['id', 'group_id', 'user_id', 'active', 'membership_state', 'updated_at'],
     order: 'updated_at DESC,id',
   },
   social_jobs: {
-    source: 'social_jobs',
-    columns: ['id', 'status', 'due_at', 'expires_at', 'attempts', 'lease_until', 'error'],
+    source: `(SELECT s.id,'records' AS queue,coalesce(json_extract(s.payload,'$.game'),'tetris') AS kind,
+      json_extract(s.payload,'$.chatId') AS chat_id,g.title AS group_title,json_extract(s.payload,'$.text') AS message_text,
+      s.status,s.due_at,s.expires_at,s.attempts,s.lease_until,s.error,NULL AS telegram_message_id
+      FROM social_jobs s LEFT JOIN groups g ON g.id=json_extract(s.payload,'$.chatId')
+      UNION ALL SELECT c.id,'communications' AS queue,c.kind,c.chat_id,g.title,c.body,
+      c.status,c.due_at,c.expires_at,c.attempts,c.lease_until,c.error,c.telegram_message_id
+      FROM communication_jobs c LEFT JOIN groups g ON g.id=c.chat_id)`,
+    columns: [
+      'id',
+      'queue',
+      'kind',
+      'chat_id',
+      'group_title',
+      'message_text',
+      ...recordJobColumns.slice(1),
+      'telegram_message_id',
+    ],
     order: 'due_at DESC,id',
   },
   ranking_blocks: {
@@ -159,7 +199,7 @@ export const ADMIN_OPERATIONS: Record<AdminAction, ActionDefinition> = {
   cancel_job: {
     table: 'social_jobs',
     key: 'id',
-    before: json(ADMIN_VIEWS.social_jobs.columns),
+    before: json(recordJobColumns),
     after: `json_object('status','suppressed')`,
     eligible: "status='pending'",
     statements: `UPDATE social_jobs SET status='suppressed',lease_until=0,error='ADMIN_CANCELLED' WHERE id=NEW.target;`,
@@ -184,6 +224,7 @@ export const ADMIN_OPERATIONS: Record<AdminAction, ActionDefinition> = {
   revoke_2048: revoke('puzzle2048_runs', '2048', 'verified'),
   revoke_snake: revoke('snake_runs', 'snake', 'verified'),
   revoke_flappy: revoke('flappy_runs', 'flappy', 'verified'),
+  revoke_doodle: revoke('doodle_runs', 'doodle', 'verified'),
   revoke_block_blast: revoke('block_blast_runs', 'block-blast', 'verified'),
   revoke_minesweeper: revoke('minesweeper_runs', 'minesweeper', 'won'),
   remove_manual: {

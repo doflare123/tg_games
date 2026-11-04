@@ -1,6 +1,7 @@
 import { CATALOG, type Player } from '../../shared/contracts.ts';
 import { AppError, integer, object, text } from '../../shared/errors.ts';
 import { launchUrl, parseLaunch } from '../../shared/launch.ts';
+import { OWNER_ID } from './admin.ts';
 import type { GroupService } from './groups.ts';
 import type { SocialRepository } from './social-repository.ts';
 import type { LaunchButton, TelegramCommand, TelegramGateway } from './telegram.ts';
@@ -27,6 +28,11 @@ export const GAME_COMMANDS: TelegramCommand[] = [
     is_ephemeral: true,
   },
   { command: 'games', description: 'Каталог игр', is_ephemeral: true },
+  {
+    command: 'feedback',
+    description: 'Предложить улучшение или написать владельцу',
+    is_ephemeral: true,
+  },
 ];
 export class GameBotService {
   constructor(
@@ -40,12 +46,23 @@ export class GameBotService {
     await this.telegram.commands(GAME_COMMANDS);
     for (const id of await this.repository.activeGroupIds())
       await this.telegram.commands(GAME_COMMANDS, id);
+    if (this.telegram.privateCommands) {
+      const commands = [
+        { command: 'games', description: 'Открыть игры' },
+        { command: 'feedback', description: 'Предложить улучшение или написать владельцу' },
+      ];
+      await this.telegram.privateCommands(commands);
+      await this.telegram.commands(
+        [...commands, { command: 'admin', description: 'Обращения и рассылки' }],
+        OWNER_ID,
+      );
+    }
   }
   async message(payload: unknown, _context: unknown = {}): Promise<void> {
     const msg = object(payload);
     const body = typeof msg.text === 'string' ? msg.text.trim() : '';
     const match =
-      /^\/(start|help|games|top|game_doom|game_mario|game_tetris|game_minesweeper|game_2048|game_snake|game_flappy|game_block_blast|game_top|game_notify_here|game_notify_on|game_notify_off)(?:@([a-zA-Z0-9_]+))?(?:\s|$)/.exec(
+      /^\/(start|help|games|top|game_doom|game_mario|game_tetris|game_minesweeper|game_2048|game_snake|game_flappy|game_doodle|game_block_blast|game_top|game_notify_here|game_notify_on|game_notify_off)(?:@([a-zA-Z0-9_]+))?(?:\s|$)/.exec(
         body,
       );
     if (!match?.[1]) return;
@@ -167,7 +184,17 @@ export class GameBotService {
               : {}),
           }
         : {}),
-      reply_markup: { inline_keyboard: [[button]] },
+      reply_markup: {
+        inline_keyboard: [
+          [button],
+          [
+            {
+              text: 'Предложить улучшение / написать владельцу',
+              url: launchUrl(me.username, 'feedback', 'start'),
+            },
+          ],
+        ],
+      },
     });
   }
   async botMembership(payload: unknown): Promise<void> {

@@ -18,6 +18,7 @@ const TABLE_NAMES: Record<AdminTable, string> = {
   puzzle2048_runs: '2048 — партии',
   snake_runs: 'Змейка — партии',
   flappy_runs: 'Flappy Bird — партии',
+  doodle_runs: 'Doodle Jump — партии',
   block_blast_runs: 'Block Blast — партии',
   minesweeper_runs: 'Сапёр — результаты',
   manual_results: 'Ручные исправления',
@@ -27,6 +28,7 @@ const TABLE_NAMES: Record<AdminTable, string> = {
   admin_visits: 'Посещения по дням',
   admin_group_events: 'История групп',
   admin_audit: 'Журнал изменений',
+  support_threads: 'Обращения игроков',
 };
 const ACTION_NAMES: Record<AdminAction, string> = {
   disable_notifications: 'Отключить уведомления',
@@ -37,6 +39,7 @@ const ACTION_NAMES: Record<AdminAction, string> = {
   revoke_2048: 'Снять результат',
   revoke_snake: 'Снять результат',
   revoke_flappy: 'Снять результат',
+  revoke_doodle: 'Снять результат',
   revoke_block_blast: 'Снять результат',
   revoke_minesweeper: 'Снять результат',
   remove_manual: 'Удалить ручное исправление',
@@ -54,6 +57,7 @@ const GAME_NAMES: Record<string, string> = {
   '2048': '2048',
   snake: 'Змейка',
   flappy: 'Flappy Bird',
+  doodle: 'Doodle Jump',
   'block-blast': 'Block Blast',
   minesweeper: 'Сапёр',
 };
@@ -236,7 +240,8 @@ function rowActions(table: AdminTable, row: Record<string, AdminCell>): AdminAct
   if (table === 'players') return ['block_player'];
   if (table === 'ranking_blocks') return ['unblock_player'];
   if (table === 'groups' && row.notifications_enabled === 1) return ['disable_notifications'];
-  if (table === 'social_jobs' && row.status === 'pending') return ['cancel_job'];
+  if (table === 'social_jobs' && row.queue === 'records' && row.status === 'pending')
+    return ['cancel_job'];
   if (table === 'manual_results') return ['remove_manual'];
   if (row.status === 'verified' || row.status === 'won') {
     const actions: Partial<Record<AdminTable, AdminAction>> = {
@@ -244,6 +249,7 @@ function rowActions(table: AdminTable, row: Record<string, AdminCell>): AdminAct
       puzzle2048_runs: 'revoke_2048',
       snake_runs: 'revoke_snake',
       flappy_runs: 'revoke_flappy',
+      doodle_runs: 'revoke_doodle',
       block_blast_runs: 'revoke_block_blast',
       minesweeper_runs: 'revoke_minesweeper',
     };
@@ -254,6 +260,15 @@ function rowActions(table: AdminTable, row: Record<string, AdminCell>): AdminAct
 }
 function cellView(key: string, value: AdminCell): string | HTMLElement {
   if (value === null) return '—';
+  if (key === 'thread_status') {
+    const labels: Record<string, string> = {
+      new: '🟢 Новое',
+      waiting: '🟡 Ждёт ответа',
+      answered: '🔴 Ответ доставлен',
+    };
+    return labels[String(value)] ?? String(value);
+  }
+  if (key === 'closed') return value === 1 ? '📁 Закрыто' : 'Открыто';
   if (typeof value === 'number' && value > 0 && /(_at|_seen)$|^day$|^at$/.test(key))
     return `${date(value)} ${new Date(value).toISOString().slice(11, 19)} UTC`;
   const string = String(value);
@@ -276,6 +291,8 @@ export function mountAdmin(host: HTMLElement): () => void {
   let search = '';
   let pending = false;
   let dialog: HTMLDialogElement | undefined;
+  let dialogBase: string | null = null;
+  let deliveryLink: string | null = null;
   host.className = 'admin-page';
   const title = element('h1', '', 'КАБИНЕТ ВЛАДЕЛЬЦА');
   const heading = element('header', 'admin-heading');
@@ -463,6 +480,23 @@ export function mountAdmin(host: HTMLElement): () => void {
     } else {
       const rows = result.rows.map((row) => {
         const actions = element('div', 'admin-row-actions');
+        if (deliveryLink && result.table === 'social_jobs' && row.queue === 'communications') {
+          const link = element('a', 'admin-action', 'Открыть доставку в боте ↗');
+          link.href = deliveryLink;
+          link.target = '_blank';
+          link.rel = 'noopener';
+          actions.append(link);
+        }
+        if (dialogBase && result.table === 'support_threads') {
+          const id = row.id;
+          if (typeof id === 'number' && Number.isSafeInteger(id) && id > 0) {
+            const link = element('a', 'admin-action', 'Открыть диалог в боте ↗');
+            link.href = dialogBase.replace(/dialog_$/, 'case_') + id;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            actions.append(link);
+          }
+        }
         for (const action of rowActions(result.table, row))
           actions.append(
             button(
@@ -534,6 +568,21 @@ export function mountAdmin(host: HTMLElement): () => void {
         throw new Error('Кабинет доступен только владельцу через Telegram.');
       if (disposed) return;
       toolbar.hidden = false;
+      try {
+        const links = await api.communicationLinks();
+        if (disposed) return;
+        dialogBase = links.dialogBase;
+        deliveryLink = links.owner?.replace(/start=inbox$/, 'start=delivery') ?? null;
+        if (links.owner) {
+          const bot = element('a', 'button', 'Обращения и рассылки в боте ↗');
+          bot.href = links.owner;
+          bot.target = '_blank';
+          bot.rel = 'noopener';
+          toolbar.append(bot);
+        }
+      } catch {
+        /* Existing admin tools remain available if the bot lookup fails. */
+      }
       await load();
     } catch (error) {
       if (!disposed) status.textContent = errorMessage(error);

@@ -4,6 +4,12 @@ import { decodeBoard2048, decodeRun2048 } from '../../shared/2048.ts';
 import { decodeAdminPage, decodeAdminPreview, decodeAdminStats } from '../../shared/admin.ts';
 import { decodeBlockBoard, decodeBlockRun } from '../../shared/block-blast.ts';
 import type { EndpointInput, EndpointName, Player, ReplayInput } from '../../shared/contracts.ts';
+import {
+  DOODLE_RULESET,
+  type DoodleRuleset,
+  decodeDoodleBoard,
+  decodeDoodleRun,
+} from '../../shared/doodle.ts';
 import { AppError, integer, object, oneOf, text } from '../../shared/errors.ts';
 import { decodeFlappyBoard, decodeFlappyRun } from '../../shared/flappy.ts';
 import { decodeGroup } from '../../shared/groups.ts';
@@ -65,6 +71,20 @@ async function call<K extends EndpointName>(name: K, input: EndpointInput<K>): P
   throw new AppError('UNAUTHORIZED', 'Рейтинговая игра доступна внутри Telegram');
 }
 export const api = {
+  async communicationLinks() {
+    const result = object(await call('getCommunicationLinks', {}));
+    const url = (value: unknown) => {
+      const link = text(value, 1, 200);
+      if (!/^https:\/\/t\.me\/[a-zA-Z0-9_]+\?start=[a-zA-Z0-9_]+$/.test(link))
+        throw new Error('Invalid bot link');
+      return link;
+    };
+    return {
+      feedback: url(result.feedback),
+      owner: result.owner === null ? null : url(result.owner),
+      dialogBase: result.dialogBase === null ? null : url(result.dialogBase),
+    };
+  },
   async createBlock(requestId: string) {
     return decodeBlockRun(await call('createBlockRun', { requestId }));
   },
@@ -103,6 +123,28 @@ export const api = {
   async flappyLeaderboard(period: 'all' | 'week', groupId?: number) {
     return decodeFlappyBoard(
       await call('getFlappyLeaderboard', { period, ...(groupId === undefined ? {} : { groupId }) }),
+    );
+  },
+  async createDoodle(requestId: string) {
+    return decodeDoodleRun(await call('createDoodleRun', { requestId }));
+  },
+  async getDoodle(runId: string) {
+    return decodeDoodleRun(await call('getDoodleRun', { runId }));
+  },
+  async submitDoodle(input: EndpointInput<'submitDoodleReplay'>) {
+    return decodeDoodleRun(await call('submitDoodleReplay', input));
+  },
+  async doodleLeaderboard(
+    period: 'all' | 'week',
+    groupId?: number,
+    ruleset: DoodleRuleset = DOODLE_RULESET,
+  ) {
+    return decodeDoodleBoard(
+      await call('getDoodleLeaderboard', {
+        period,
+        ruleset,
+        ...(groupId === undefined ? {} : { groupId }),
+      }),
     );
   },
   async createSnake(requestId: string, size: number) {

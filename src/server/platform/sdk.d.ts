@@ -7,10 +7,27 @@ declare module 'sdk' {
     constructor(message: string, parameters?: Record<string, unknown>);
   }
   export const api: {
+    sendPhoto(input: {
+      chat_id: number;
+      photo: string;
+      caption: string;
+      reply_markup?: { inline_keyboard: import('../domain/telegram.ts').LaunchButton[][] };
+    }): Promise<unknown>;
+    sendVideo(input: {
+      chat_id: number;
+      video: string;
+      caption: string;
+      reply_markup?: { inline_keyboard: import('../domain/telegram.ts').LaunchButton[][] };
+    }): Promise<unknown>;
+    editMessageText(input: import('../domain/telegram.ts').EditMessage): Promise<unknown>;
+    answerCallbackQuery(input: { callback_query_id: string; text?: string }): Promise<unknown>;
     getChatMember(input: { chat_id: number; user_id: number }): Promise<unknown>;
     setMyCommands(input: {
       commands: import('../domain/telegram.ts').TelegramCommand[];
-      scope: { type: 'all_group_chats' } | { type: 'chat'; chat_id: number };
+      scope:
+        | { type: 'all_group_chats' }
+        | { type: 'all_private_chats' }
+        | { type: 'chat'; chat_id: number };
     }): Promise<unknown>;
     getMe(): Promise<unknown>;
     getMyCommands(input: { scope: { type: 'all_group_chats' } }): Promise<unknown>;
@@ -21,7 +38,7 @@ declare module 'sdk' {
       chat_id: number;
       text: string;
       reply_markup?: {
-        inline_keyboard: Array<Array<{ text: string; url?: string; web_app?: { url: string } }>>;
+        inline_keyboard: import('../domain/telegram.ts').LaunchButton[][];
       };
     }): Promise<unknown>;
   };

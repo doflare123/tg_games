@@ -1,6 +1,7 @@
 import { afterEach, expect, it } from 'vitest';
 import { localRepository } from '../scripts/local-api.ts';
 import { Service2048 } from '../src/server/domain/2048.ts';
+import { BlockService } from '../src/server/domain/block-blast.ts';
 import { MinesweeperService } from '../src/server/domain/minesweeper.ts';
 import {
   blockRankingAndRemove,
@@ -8,6 +9,7 @@ import {
   moderationSnapshot,
 } from '../src/server/platform/ranking-moderation.ts';
 import { Sql2048Repository } from '../src/server/platform/sql-2048.ts';
+import { SqlBlockRepository } from '../src/server/platform/sql-block-blast.ts';
 import { SqlMineRepository } from '../src/server/platform/sql-minesweeper.ts';
 
 const handles: ReturnType<typeof localRepository>[] = [];
@@ -126,6 +128,37 @@ it('blocks inserts and updates across all games, including manual corrections an
       ).rejects.toThrow('RANKING_BLOCKED');
     }
   }
+});
+
+it('removes selected Block Blast records with identity checks and preserves other players', async () => {
+  const { db } = local();
+  const blocks = new BlockService(new SqlBlockRepository(db), { now: () => 100, seed: () => 123 });
+  const blockRequest = { ...request, removeGames: ['block-blast'] };
+  for (const who of [player, { id: 43, name: 'Другой игрок' }]) {
+    await blocks.create(who, { requestId: 'moderation-block-blast' });
+  }
+  await expect(
+    blockRankingAndRemove(db, { ...blockRequest, expectedName: 'Другой' }, 200),
+  ).rejects.toThrow('identity');
+  expect((await moderationSnapshot(db, blockRequest)).records['block-blast']).toHaveLength(1);
+  const result = await blockRankingAndRemove(db, blockRequest, 200);
+  expect(result.removed).toEqual({ 'block-blast': 1 });
+  expect(result.remaining.records).toEqual({ 'block-blast': [] });
+  expect(await db.get('SELECT count(*) AS n FROM block_blast_runs WHERE player_id=43')).toEqual({
+    n: 1,
+  });
+  const cloudLike = {
+    get: db.get.bind(db),
+    all: db.all.bind(db),
+    run: async (...args: Parameters<typeof db.run>) => {
+      if (args[0].startsWith('CREATE TRIGGER'))
+        throw new Error('Write query looks like a read one');
+      return db.run(...args);
+    },
+  };
+  expect((await blockRankingAndRemove(cloudLike, blockRequest, 300)).removed).toEqual({
+    'block-blast': 0,
+  });
 });
 
 it('suppresses queued notifications and prevents delayed retries from reviving them', async () => {

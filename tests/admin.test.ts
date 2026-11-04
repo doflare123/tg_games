@@ -7,6 +7,7 @@ import { installAdmin } from '../src/server/platform/admin-ddl.ts';
 import { verifiedPlayer } from '../src/server/platform/context.ts';
 import { Sql2048Repository } from '../src/server/platform/sql-2048.ts';
 import { SqlAdminRepository } from '../src/server/platform/sql-admin.ts';
+import { SqlCommunicationsRepository } from '../src/server/platform/sql-communications.ts';
 import { SqlSocialRepository } from '../src/server/platform/sql-social-repository.ts';
 import { ADMIN_ACTIONS, ADMIN_TABLES, type AdminAction } from '../src/shared/admin.ts';
 import { object } from '../src/shared/errors.ts';
@@ -110,6 +111,17 @@ it('bounds and validates table browsing and returns no game state, replay or not
     expect(result.columns).not.toContain('payload');
     expect(result.columns).not.toContain('last_submission');
   }
+});
+it('shows unavailable memberships separately from bans and supports searching by state', async () => {
+  const { admin, social, now } = await setup();
+  await social.observeMember({ chatId: -100, userId: 1, active: true, updatedAt: now() });
+  await social.observeMember({ chatId: -100, userId: 2, active: false, updatedAt: now() });
+  await social.markMemberUnavailable(-100, 3, now());
+  const page = await admin.list(owner, { table: 'group_memberships', search: 'unavailable' });
+  expect(page.columns).toContain('membership_state');
+  expect(page.rows).toHaveLength(1);
+  expect(page.rows[0]).toMatchObject({ user_id: 3, active: -1, membership_state: 'unavailable' });
+  expect((await admin.list(owner, { table: 'ranking_blocks' })).rows).toHaveLength(0);
 });
 it('records visits once per day, deduplicates group status events and compares equal week intervals', async () => {
   const { admin, db, social, now, setNow } = await setup();
@@ -218,6 +230,7 @@ it('revokes every game without deleting attempts, suppresses its jobs and preser
     ['puzzle2048_runs', 'revoke_2048', '2048', 'verified'],
     ['snake_runs', 'revoke_snake', 'snake', 'verified'],
     ['flappy_runs', 'revoke_flappy', 'flappy', 'verified'],
+    ['doodle_runs', 'revoke_doodle', 'doodle', 'verified'],
     ['block_blast_runs', 'revoke_block_blast', 'block-blast', 'verified'],
     ['minesweeper_runs', 'revoke_minesweeper', 'minesweeper', 'won'],
     ['manual_results', 'remove_manual', 'tetris', null],
@@ -360,6 +373,48 @@ it('cancels only pending jobs, records the original fields and leaves other jobs
   expect(await db.get("SELECT status FROM social_jobs WHERE id='running-one'")).toEqual({
     status: 'running',
   });
+});
+it('shows record and broadcast deliveries together, including message text, recipient, status and pending totals', async () => {
+  const { admin, db, social, now } = await setup();
+  await social.upsertGroup({ id: -100, title: 'Общая группа', active: true, botAdmin: true });
+  await db.run(
+    "INSERT INTO social_jobs VALUES('record:test',:payload,'pending',:now,:expires,0,0,NULL)",
+    {
+      ':payload': JSON.stringify({ chatId: -100, game: 'tetris', text: 'Новый рекорд' }),
+      ':now': now(),
+      ':expires': now() + 10000,
+    },
+  );
+  const communications = new SqlCommunicationsRepository(db);
+  await communications.draft({
+    id: 'b55',
+    body: 'Сообщение владельца группам',
+    groupIds: [-100],
+    status: 'draft',
+    createdAt: now(),
+  });
+  await communications.confirm('b55', now());
+  const page = await admin.list(owner, { table: 'social_jobs', search: 'Общая группа' });
+  expect(page.rows).toHaveLength(2);
+  expect(page.rows.find((row) => row.queue === 'communications')).toMatchObject({
+    id: 'broadcast:b55:-100',
+    kind: 'broadcast',
+    chat_id: -100,
+    group_title: 'Общая группа',
+    message_text: 'Сообщение владельца группам',
+    status: 'pending',
+  });
+  expect((await admin.stats(owner, {})).totals.pendingJobs).toBe(2);
+  await expect(
+    admin.preview(owner, { action: 'cancel_job', target: 'broadcast:b55:-100' }),
+  ).rejects.toMatchObject({ code: 'CONFLICT' });
+  const job = await communications.claim(now());
+  if (!job) throw new Error('Missing broadcast job');
+  await communications.finish(job, 'sent', undefined, 5068);
+  const sent = await admin.list(owner, { table: 'social_jobs', search: 'Сообщение владельца' });
+  expect(sent.rows).toHaveLength(1);
+  expect(sent.rows[0]).toMatchObject({ status: 'sent', telegram_message_id: 5068 });
+  expect((await admin.stats(owner, {})).totals.pendingJobs).toBe(1);
 });
 
 it('skips existing triggers when reinstalling, matching the cloud write/read distinction', async () => {

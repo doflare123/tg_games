@@ -12,12 +12,7 @@ import type { Player } from '../../shared/contracts.ts';
 import { AppError, integer, object, oneOf, text } from '../../shared/errors.ts';
 import { ADMIN_WEEK_MS, adminWeekStart, requireAdmin } from '../domain/admin.ts';
 import { ADMIN_REQUIRED_TRIGGERS } from './admin-ddl.ts';
-import {
-  ADMIN_ATTEMPTS,
-  ADMIN_OPERATIONS,
-  ADMIN_PLAYERS,
-  ADMIN_VIEWS,
-} from './admin-definitions.ts';
+import { ADMIN_ATTEMPTS, ADMIN_OPERATIONS, ADMIN_RUNS, ADMIN_VIEWS } from './admin-definitions.ts';
 import type { SqlDatabase } from './sql-repository.ts';
 
 export class SqlAdminRepository {
@@ -122,21 +117,84 @@ export class SqlAdminRepository {
       i === 0 ? now : start - (i - 1) * ADMIN_WEEK_MS,
     ]);
     windows.push([start - ADMIN_WEEK_MS, now - ADMIN_WEEK_MS]);
-    // All window bounds come from the server clock; clients cannot supply SQL or dates.
-    const rows =
-      await this.db.all(`WITH attempts AS (${ADMIN_ATTEMPTS}), windows(position,start,end) AS (VALUES ${windows.map(([a, b], i) => `(${i},${a},${b})`).join(',')}), first_visits AS (SELECT player_id,min(first_seen) AS at FROM admin_visits GROUP BY player_id)
-      SELECT start,end,
-      (SELECT count(*) FROM attempts WHERE at>=start AND at<end) AS attempts,
-      (SELECT count(*) FROM attempts WHERE at>=start AND at<end AND ranked=1) AS results,
-      (SELECT count(DISTINCT player_id) FROM attempts WHERE at>=start AND at<end) AS players,
-      (SELECT count(DISTINCT player_id) FROM admin_visits WHERE day>=CAST(start/86400000 AS INTEGER)*86400000 AND day<end AND first_seen<end) AS visitors,
-      (SELECT count(*) FROM first_visits WHERE at>=start AND at<end) AS newVisitors,
-      (SELECT count(DISTINCT group_id) FROM admin_group_events WHERE kind='added' AND at>=start AND at<end) AS added,
-      (SELECT count(DISTINCT group_id) FROM admin_group_events WHERE kind='removed' AND at>=start AND at<end) AS removed FROM windows ORDER BY position`);
-    if (!Array.isArray(rows) || rows.length !== weeks + 1)
-      throw new Error('Invalid statistics windows');
+    const params = {
+      ':earliest': start - (weeks - 1) * ADMIN_WEEK_MS,
+      ':now': now,
+      ':matchedStart': start - ADMIN_WEEK_MS,
+      ':matchedEnd': now - ADMIN_WEEK_MS,
+    };
+    const bucket = `CAST((at-:earliest)/${ADMIN_WEEK_MS} AS INTEGER)`;
+    const matched = 'at>=:matchedStart AND at<:matchedEnd';
+    const rows = windows.map(([a, b]) => ({
+      start: a,
+      end: b,
+      attempts: 0,
+      results: 0,
+      players: 0,
+      visitors: 0,
+      newVisitors: 0,
+      added: 0,
+      removed: 0,
+    }));
+    type Metric =
+      | 'attempts'
+      | 'results'
+      | 'players'
+      | 'visitors'
+      | 'newVisitors'
+      | 'added'
+      | 'removed';
+    const collect = async (sql: string, keys: Metric[]) => {
+      const values = await this.db.all(sql, params);
+      if (!Array.isArray(values)) throw new Error('Invalid statistics aggregates');
+      for (const value of values) {
+        const aggregate = object(value);
+        const index = weeks - 1 - integer(aggregate.bucket, 0, weeks - 1);
+        const row = rows[index];
+        const previous = rows[weeks];
+        if (!row || !previous) throw new Error('Invalid statistics bucket');
+        for (const key of keys) {
+          row[key] = integer(aggregate[key], 0, Number.MAX_SAFE_INTEGER);
+          previous[key] += integer(aggregate[`${key}Matched`], 0, Number.MAX_SAFE_INTEGER);
+        }
+      }
+    };
+    // Aggregate each source once by week, including the matched comparison in
+    // the same pass. Correlated counts per window exceed cloud rows_read limits.
+    await collect(
+      `WITH attempts AS (${ADMIN_ATTEMPTS}) SELECT ${bucket} AS bucket,
+      count(*) AS attempts,sum(ranked) AS results,count(DISTINCT player_id) AS players,
+      sum(CASE WHEN ${matched} THEN 1 ELSE 0 END) AS attemptsMatched,
+      sum(CASE WHEN ${matched} THEN ranked ELSE 0 END) AS resultsMatched,
+      count(DISTINCT CASE WHEN ${matched} THEN player_id END) AS playersMatched
+      FROM attempts WHERE at>=:earliest AND at<:now GROUP BY bucket`,
+      ['attempts', 'results', 'players'],
+    );
+    await collect(
+      `WITH visits AS (SELECT player_id,first_seen AS at FROM admin_visits WHERE day>=:earliest AND day<:now)
+      SELECT ${bucket} AS bucket,count(DISTINCT player_id) AS visitors,
+      count(DISTINCT CASE WHEN ${matched} THEN player_id END) AS visitorsMatched
+      FROM visits WHERE at>=:earliest AND at<:now GROUP BY bucket`,
+      ['visitors'],
+    );
+    await collect(
+      `WITH first_visits AS (SELECT player_id,min(first_seen) AS at FROM admin_visits GROUP BY player_id)
+      SELECT ${bucket} AS bucket,count(*) AS newVisitors,
+      sum(CASE WHEN ${matched} THEN 1 ELSE 0 END) AS newVisitorsMatched
+      FROM first_visits WHERE at>=:earliest AND at<:now GROUP BY bucket`,
+      ['newVisitors'],
+    );
+    await collect(
+      `SELECT ${bucket} AS bucket,
+      count(DISTINCT CASE WHEN kind='added' THEN group_id END) AS added,
+      count(DISTINCT CASE WHEN kind='removed' THEN group_id END) AS removed,
+      count(DISTINCT CASE WHEN kind='added' AND ${matched} THEN group_id END) AS addedMatched,
+      count(DISTINCT CASE WHEN kind='removed' AND ${matched} THEN group_id END) AS removedMatched
+      FROM admin_group_events WHERE at>=:earliest AND at<:now GROUP BY bucket`,
+      ['added', 'removed'],
+    );
     const totals = await this.db.get(
-      `SELECT (SELECT count(*) FROM (${ADMIN_PLAYERS})) AS players,(SELECT count(*) FROM groups) AS groups,(SELECT count(*) FROM groups WHERE active=1) AS activeGroups,(SELECT count(*) FROM ranking_blocks) AS blocked,((SELECT count(*) FROM social_jobs WHERE status IN ('pending','running'))+(SELECT count(*) FROM communication_jobs WHERE status IN ('pending','running'))) AS pendingJobs`,
+      `SELECT (SELECT count(*) FROM (${[...ADMIN_RUNS.map(([table]) => `SELECT player_id FROM ${table}`), 'SELECT player_id FROM admin_visits', 'SELECT player_id FROM manual_results'].join(' UNION ')})) AS players,(SELECT count(*) FROM groups) AS groups,(SELECT count(*) FROM groups WHERE active=1) AS activeGroups,(SELECT count(*) FROM ranking_blocks) AS blocked,((SELECT count(*) FROM social_jobs WHERE status IN ('pending','running'))+(SELECT count(*) FROM communication_jobs WHERE status IN ('pending','running'))) AS pendingJobs`,
     );
     const games = await this.db.all(
       `WITH attempts AS (${ADMIN_ATTEMPTS}) SELECT game,count(*) AS attempts,sum(ranked) AS results,count(DISTINCT player_id) AS players FROM attempts WHERE at>=:start AND at<:now GROUP BY game ORDER BY attempts DESC,game`,

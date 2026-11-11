@@ -182,6 +182,29 @@ it('records visits once per day, deduplicates group status events and compares e
   expect(adminWeekStart(Date.UTC(2026, 10, 8, 23, 59))).toBe(Date.UTC(2026, 10, 2));
   expect(adminWeekStart(Date.UTC(2026, 10, 9))).toBe(Date.UTC(2026, 10, 9));
 });
+it('aggregates distinct visitors across days and keeps partial-week boundaries for every history length', async () => {
+  const { admin, now, setNow } = await setup();
+  const current = now();
+  const start = adminWeekStart(current);
+  const matchedEnd = current - ADMIN_WEEK_MS;
+  for (const at of [start - ADMIN_WEEK_MS, matchedEnd - 1, matchedEnd, start, current]) {
+    setNow(at);
+    await admin.observe(other);
+  }
+  // A visitor first seen exactly at the comparison cutoff is not in that interval.
+  setNow(matchedEnd);
+  await admin.observe({ id: 43, name: 'Cutoff visitor' });
+  setNow(current);
+  await admin.observe({ id: 44, name: 'Current cutoff visitor' });
+  for (const weeks of [4, 8, 12]) {
+    const stats = await admin.stats(owner, { weeks });
+    expect(stats.weeks).toHaveLength(weeks);
+    expect(stats.weeks[0]).toMatchObject({ visitors: 1, newVisitors: 0 });
+    expect(stats.weeks[1]).toMatchObject({ visitors: 2, newVisitors: 2 });
+    expect(stats.previousMatched).toMatchObject({ visitors: 1, newVisitors: 1 });
+    expect(stats.weeks.slice(2).every((week) => week.visitors === 0)).toBe(true);
+  }
+});
 it('uses an atomic audited compare-and-swap, with idempotent retries and bound reasons', async () => {
   const { admin, db } = await setup();
   await db.run("INSERT INTO groups(id,title,notifications_enabled) VALUES(-42,'Group',1)");

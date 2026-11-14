@@ -839,3 +839,58 @@ h1 span {
 .puzzle-preview-grid .bright {
   background: #f4c775;
 }
+.pet-invite {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+  padding: 26px;
+  margin: 0 0 36px;
+  border: 1px solid #bfcbae;
+  border-radius: 18px;
+  background: #e7eddb;
+  color: #3f543a;
+}
+.pet-invite-face {
+  flex-shrink: 0;
+  width: 94px;
+  height: 86px;
+  border-radius: 45% 45% 40% 40%;
+  background: #bed09b;
+  display: grid;
+  place-items: center;
+  font-size: 24px;
+  box-shadow: inset -4px -7px 0 #90a57022;
+}
+.pet-invite h2 {
+  font-size: clamp(19px, 2.5vw, 27px);
+  margin: 8px 0;
+  letter-spacing: -0.03em;
+}
+.pet-invite p {
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+  max-width: 560px;
+}
+.pet-invite .button {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+@media (max-width: 680px) {
+  .pet-invite {
+    gap: 15px;
+    flex-wrap: wrap;
+    padding: 20px;
+  }
+  .pet-invite-face {
+    width: 58px;
+    height: 58px;
+    font-size: 17px;
+  }
+  .pet-invite > div {
+    flex: 1;
+  }
+  .pet-invite .button {
+    margin-left: 73px;
+  }
+}

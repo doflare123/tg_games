@@ -8,8 +8,14 @@ function localApi(): Plugin {
     apply: 'serve',
     configureServer(server) {
       const ownerPreview = process.env.TG_GAMES_DEV_OWNER === '1';
+      const databaseName = process.env.TG_GAMES_DEV_DATABASE;
+      if (databaseName && !/^[a-zA-Z0-9_-]+\.sqlite$/.test(databaseName))
+        throw new Error('Dev database must be a filename inside .cache');
       const api = createLocalApi(
-        resolve(ownerPreview ? '.cache/arcade-admin-dev.sqlite' : '.cache/arcade-dev.sqlite'),
+        resolve(
+          '.cache',
+          databaseName ?? (ownerPreview ? 'arcade-admin-dev.sqlite' : 'arcade-dev.sqlite'),
+        ),
         ownerPreview,
       );
       server.middlewares.use('/__dev/rpc', (req, res) => {

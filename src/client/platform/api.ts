@@ -15,6 +15,7 @@ import { decodeFlappyBoard, decodeFlappyRun } from '../../shared/flappy.ts';
 import { decodeGroup } from '../../shared/groups.ts';
 import { decodeMineLeaderboard, decodeMineResult } from '../../shared/minesweeper.ts';
 import { decodeSnakeBoard, decodeSnakeRun } from '../../shared/snake.ts';
+import { decodePetView, type PetMutation } from '../../shared/tamagotchi.ts';
 import { decodeLeaderboard, decodeRun } from '../../shared/validation.ts';
 import { inTelegram, telegram } from './telegram.ts';
 export const hasApi = inTelegram || import.meta.env.DEV;
@@ -65,12 +66,35 @@ async function call<K extends EndpointName>(name: K, input: EndpointInput<K>): P
       signal: AbortSignal.timeout(15000),
     });
     const result = object(await response.json());
-    if (!result.ok) throw new AppError('UNAVAILABLE', text(result.error));
+    if (!result.ok) {
+      const code = oneOf(result.code, [
+        'BAD_INPUT',
+        'UNAUTHORIZED',
+        'NOT_FOUND',
+        'CONFLICT',
+        'EXPIRED',
+        'RATE_LIMIT',
+        'UNAVAILABLE',
+        'INTERNAL',
+      ]);
+      throw new AppError(code === 'INTERNAL' ? 'UNAVAILABLE' : code, text(result.error));
+    }
     return result.result;
   }
   throw new AppError('UNAUTHORIZED', 'Рейтинговая игра доступна внутри Telegram');
 }
 export const api = {
+  async pet() {
+    return decodePetView(await call('getPet', {}));
+  },
+  async actPet(input: PetMutation) {
+    return decodePetView(await call('actPet', input));
+  },
+  async petLeaderboard(period: 'all' | 'week', groupId?: number) {
+    return decodeBlockBoard(
+      await call('getPetLeaderboard', { period, ...(groupId === undefined ? {} : { groupId }) }),
+    );
+  },
   async communicationLinks() {
     const result = object(await call('getCommunicationLinks', {}));
     const url = (value: unknown) => {

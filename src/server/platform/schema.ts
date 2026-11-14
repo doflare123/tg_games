@@ -1,4 +1,28 @@
-import { index, integer, table, text } from 'sdk/db';
+import { index, integer, table, text, uniqueIndex } from 'sdk/db';
+export const petEvents = table(
+  'pet_events',
+  {
+    eventOrder: integer('event_order').primaryKey({ autoIncrement: true }),
+    id: text('id').notNull(),
+    playerId: integer('player_id').notNull(),
+    playerName: text('player_name').notNull(),
+    revision: integer('revision').notNull(),
+    requestId: text('request_id').notNull(),
+    receipt: text('receipt').notNull(),
+    stateJson: text('state_json').notNull(),
+    score: integer('score').notNull(),
+    createdAt: integer('created_at').notNull(),
+    socialProcessed: integer('social_processed').notNull(),
+  },
+  (t) => ({
+    player: index('pet_events_player').on(t.playerId, t.revision),
+    board: index('pet_events_board').on(t.score, t.createdAt),
+    social: index('pet_events_social').on(t.socialProcessed, t.eventOrder),
+    id: uniqueIndex('pet_events_id').on(t.id),
+    revision: uniqueIndex('pet_events_revision').on(t.playerId, t.revision),
+    request: uniqueIndex('pet_events_request').on(t.playerId, t.requestId),
+  }),
+);
 export const communicationAttachments = table('communication_attachments', {
   id: text('id').primaryKey(),
   mediaJson: text('media_json').notNull(),

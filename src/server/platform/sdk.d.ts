@@ -55,6 +55,7 @@ declare module 'sdk/db' {
   export function integer(name: string): Column;
   export function text(name: string): Column;
   export function index(name: string): Index;
+  export function uniqueIndex(name: string): Index;
   export function table<T extends Record<string, Column>>(
     name: string,
     columns: T,

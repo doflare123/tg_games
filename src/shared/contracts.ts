@@ -17,6 +17,7 @@ import type { FlappyBoard, FlappyReplay, FlappyRun } from './flappy.ts';
 import type { GroupView } from './groups.ts';
 import type { MineLeaderboard, MineResult, MineResultInput } from './minesweeper.ts';
 import type { SnakeBoard, SnakeReplay, SnakeRun } from './snake.ts';
+import type { PetMutation, PetWireView } from './tamagotchi.ts';
 export interface Player {
   id: number;
   name: string;
@@ -126,6 +127,9 @@ export interface LeaderboardView {
   me: LeaderboardEntry | null;
 }
 export interface Endpoints {
+  getPet: { input: Record<string, never>; output: PetWireView };
+  actPet: { input: PetMutation; output: PetWireView };
+  getPetLeaderboard: { input: { period: Period; groupId?: number }; output: BlockBoard };
   getCommunicationLinks: {
     input: Record<string, never>;
     output: { feedback: string; owner: string | null; dialogBase: string | null };

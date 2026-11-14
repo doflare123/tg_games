@@ -27,6 +27,7 @@
     "test:doodle:browser": "node --experimental-transform-types scripts/doodle-smoke.ts && node --experimental-transform-types scripts/doodle-tilt-smoke.ts",
     "test:flappy:browser": "node scripts/flappy-smoke.ts",
     "test:block-blast:browser": "node --experimental-transform-types scripts/block-blast-smoke.ts",
+    "test:pet:browser": "node --experimental-transform-types scripts/tamagotchi-smoke.ts",
     "setup:doom": "node scripts/setup-doom.ts",
     "test:production": "npm run build && node scripts/browser-smoke.ts --production",
     "diagnose:bot": "npm run build && node scripts/diagnose-bot.ts",

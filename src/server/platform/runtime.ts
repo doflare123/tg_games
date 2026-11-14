@@ -12,6 +12,7 @@ import { GroupService } from '../domain/groups.ts';
 import { MaintenanceService } from '../domain/maintenance.ts';
 import { MinesweeperService } from '../domain/minesweeper.ts';
 import { SnakeService } from '../domain/snake.ts';
+import { TamagotchiService } from '../domain/tamagotchi.ts';
 import { verifiedPlayer } from './context.ts';
 import { MINI_APP_URL } from './mini-app-config.ts';
 import { Sql2048Repository } from './sql-2048.ts';
@@ -24,6 +25,7 @@ import { SqlMineRepository } from './sql-minesweeper.ts';
 import { SqlArcadeRepository } from './sql-repository.ts';
 import { SqlSnakeRepository } from './sql-snake.ts';
 import { SqlSocialRepository } from './sql-social-repository.ts';
+import { SqlPetRepository } from './sql-tamagotchi.ts';
 import { telegramGateway } from './telegram-gateway.ts';
 export const repository = new SqlArcadeRepository(db);
 export const admin = new SqlAdminRepository(db, () => Date.now());
@@ -35,6 +37,8 @@ export const communications = new CommunicationsService(
   () => Date.now(),
 );
 export const groups = new GroupService(socialRepository, telegramGateway, () => Date.now());
+export const petRepository = new SqlPetRepository(db);
+export const tamagotchi = new TamagotchiService(petRepository, () => Date.now(), groups);
 export const flappyRepository = new SqlFlappyRepository(db);
 export const flappy = new FlappyService(
   flappyRepository,
@@ -91,6 +95,7 @@ export const maintenance = new MaintenanceService(
   flappyRepository,
   blockBlastRepository,
   doodleRepository,
+  petRepository,
 );
 export async function flushNotifications(): Promise<void> {
   try {

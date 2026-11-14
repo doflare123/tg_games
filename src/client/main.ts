@@ -40,7 +40,8 @@ const boardTab = button(
   'nav-button',
 );
 const adminTab = button('Кабинет', () => navigate({ view: 'admin' }), 'nav-button');
-navigation.append(gamesTab, boardTab);
+const petTab = button('Питомец', () => navigate({ view: 'pet' }), 'nav-button');
+navigation.append(gamesTab, petTab, boardTab);
 const identity = element(
   'span',
   'identity',
@@ -86,6 +87,7 @@ if (hasApi)
       identity.textContent = '● ГОСТЬ';
     });
 function tabs(board: boolean): void {
+  petTab.classList.remove('active');
   adminTab.classList.remove('active');
   gamesTab.classList.toggle('active', !board);
   boardTab.classList.toggle('active', board);
@@ -332,9 +334,26 @@ function renderCatalog(): void {
       'text-button',
     ),
   );
-  content.append(hero, section, note);
+  const petInvite = element('section', 'pet-invite');
+  const petCopy = element('div');
+  petCopy.append(
+    element('span', 'eyebrow', 'НОВЫЙ ЖИТЕЛЬ ARCADE'),
+    element('h2', '', 'Теперь ты играешь не только для себя.'),
+    element(
+      'p',
+      '',
+      'Твой питомец мечтает о банане и уютном доме. Очки и попытки из разных игр помогут исполнить его желания.',
+    ),
+  );
+  petInvite.append(
+    element('span', 'pet-invite-face', '◕ ᴥ ◕'),
+    petCopy,
+    button('Познакомиться →', () => navigate({ view: 'pet' }), 'button primary'),
+  );
+  content.append(hero, petInvite, section, note);
 }
 function routeHash(target: LaunchTarget): string {
+  if (target.view === 'pet') return '#pet';
   if (target.view === 'admin') return '#admin';
   if (target.view === 'game') {
     const variant =
@@ -375,8 +394,10 @@ function renderPage(target: LaunchTarget, restoreFocus = false): void {
   disposeBoard?.();
   disposeBoard = null;
   currentView = target;
+  petTab.classList.toggle('active', target.view === 'pet');
   content.replaceChildren();
   document.body.classList.toggle('playing-game', target.view === 'game');
+  document.body.classList.toggle('pet-open', target.view === 'pet');
   content.classList.toggle('game-main', target.view === 'game');
   window.scrollTo({ top: 0, behavior: 'instant' });
   document.title = 'Arcade — игры в Telegram';
@@ -390,6 +411,30 @@ function renderPage(target: LaunchTarget, restoreFocus = false): void {
         target.snakeSize ?? 16,
       );
     else navigate({ view: 'catalog' }, true);
+  } else if (target.view === 'pet') {
+    gamesTab.classList.remove('active');
+    boardTab.classList.remove('active');
+    adminTab.classList.remove('active');
+    document.title = 'Твой питомец — Arcade';
+    const page = element('section');
+    content.append(page);
+    let closed = false;
+    let dispose: (() => void) | undefined;
+    disposeBoard = () => {
+      closed = true;
+      dispose?.();
+      page.remove();
+    };
+    void import('./games/tamagotchi/controller.ts')
+      .then((module) => {
+        if (!closed)
+          dispose = module.mountTamagotchi(page, (game) =>
+            openGame(CATALOG.find((entry) => entry.id === game)),
+          );
+      })
+      .catch((error) => {
+        if (!closed) page.replaceChildren(element('p', 'empty-state', errorMessage(error)));
+      });
   } else if (target.view === 'admin') {
     gamesTab.classList.remove('active');
     boardTab.classList.remove('active');

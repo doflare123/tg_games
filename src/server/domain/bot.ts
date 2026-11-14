@@ -6,6 +6,7 @@ import type { GroupService } from './groups.ts';
 import type { SocialRepository } from './social-repository.ts';
 import type { LaunchButton, TelegramCommand, TelegramGateway } from './telegram.ts';
 export const GAME_COMMANDS: TelegramCommand[] = [
+  { command: 'pet', description: 'Питомец, желания и уютный дом', is_ephemeral: true },
   ...CATALOG.filter((game) => game.available).map((game) => ({
     command: `game_${game.id.replaceAll('-', '_')}`,
     description: `Сразу открыть ${game.title}`,
@@ -62,7 +63,7 @@ export class GameBotService {
     const msg = object(payload);
     const body = typeof msg.text === 'string' ? msg.text.trim() : '';
     const match =
-      /^\/(start|help|games|top|game_doom|game_mario|game_tetris|game_minesweeper|game_2048|game_snake|game_flappy|game_doodle|game_block_blast|game_top|game_notify_here|game_notify_on|game_notify_off)(?:@([a-zA-Z0-9_]+))?(?:\s|$)/.exec(
+      /^\/(start|help|games|pet|top|game_doom|game_mario|game_tetris|game_minesweeper|game_2048|game_snake|game_flappy|game_doodle|game_block_blast|game_top|game_notify_here|game_notify_on|game_notify_off)(?:@([a-zA-Z0-9_]+))?(?:\s|$)/.exec(
         body,
       );
     if (!match?.[1]) return;
@@ -112,13 +113,19 @@ export class GameBotService {
         ? isGroup
           ? `board_${chatId}`
           : 'leaderboard'
-        : 'catalog';
+        : command === 'pet'
+          ? 'pet'
+          : 'catalog';
     if (command === 'start') {
       const parameter = body.slice(match[0].length).trim().split(/\s/, 1)[0];
       if (parameter && parseLaunch(parameter).view !== 'catalog') target = parameter;
     }
     let response = 'Открыть Arcade';
     let message = 'Выбери игру и играй прямо в Telegram.';
+    if (command === 'pet') {
+      response = 'Зайти к питомцу';
+      message = 'Твой маленький друг ждёт дома. Играй, исполняй желания и обустраивай комнаты.';
+    }
     if (game) {
       response = 'Играть';
       message = `${game.title} — запуск игры`;

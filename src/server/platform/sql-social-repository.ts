@@ -40,6 +40,7 @@ function decodeJob(value: unknown): SocialJob {
             'flappy',
             'doodle',
             'block-blast',
+            'tamagotchi',
           ]),
     chatId,
     playerId: integer(p.playerId, 1, Number.MAX_SAFE_INTEGER),
@@ -132,6 +133,7 @@ export class SqlSocialRepository implements SocialRepository {
       UNION SELECT player_id FROM flappy_runs WHERE status='verified'
       UNION SELECT player_id FROM doodle_runs WHERE status='verified'
       UNION SELECT player_id FROM block_blast_runs WHERE status='verified'
+      UNION SELECT player_id FROM pet_events WHERE score>0
     ) SELECT p.player_id FROM players p LEFT JOIN group_memberships m ON m.user_id=p.player_id AND m.group_id=:group
       WHERE m.updated_at IS NULL OR m.updated_at<:since
       ORDER BY CASE WHEN m.updated_at IS NULL THEN 0 ELSE 1 END,m.updated_at,p.player_id LIMIT :limit`,

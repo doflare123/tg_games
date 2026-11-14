@@ -14,6 +14,7 @@ import { GroupService } from '../src/server/domain/groups.ts';
 import { MaintenanceService } from '../src/server/domain/maintenance.ts';
 import { MinesweeperService } from '../src/server/domain/minesweeper.ts';
 import { SnakeService } from '../src/server/domain/snake.ts';
+import { TamagotchiService } from '../src/server/domain/tamagotchi.ts';
 import type { TelegramGateway } from '../src/server/domain/telegram.ts';
 import {
   DDL_2048,
@@ -61,7 +62,10 @@ import { SqlMineRepository } from '../src/server/platform/sql-minesweeper.ts';
 import { SqlArcadeRepository, type SqlDatabase } from '../src/server/platform/sql-repository.ts';
 import { SqlSnakeRepository } from '../src/server/platform/sql-snake.ts';
 import { SqlSocialRepository } from '../src/server/platform/sql-social-repository.ts';
+import { SqlPetRepository } from '../src/server/platform/sql-tamagotchi.ts';
+import { TAMAGOTCHI_DDL } from '../src/server/platform/tamagotchi-ddl.ts';
 import { AppError, object } from '../src/shared/errors.ts';
+import { encodePetView } from '../src/shared/tamagotchi.ts';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS runs (
@@ -84,6 +88,7 @@ export function localRepository(file = ':memory:') {
     if (!columns.some((column) => column.name === name))
       database.exec(`ALTER TABLE runs ADD COLUMN ${name} ${definition}`);
   database.exec(SOCIAL_DDL);
+  database.exec(TAMAGOTCHI_DDL);
   for (const sql of COMMUNICATION_SCHEMA) database.exec(sql);
   const threadColumns = database.prepare('PRAGMA table_info(support_threads)').all();
   for (const [name, definition] of Object.entries(SUPPORT_THREAD_COLUMNS)) {
@@ -197,6 +202,8 @@ export function createLocalApi(file: string, ownerPreview = false) {
   const flappyRepository = new SqlFlappyRepository(local.db);
   const snakeRepository = new SqlSnakeRepository(local.db);
   const groups = new GroupService(social, telegram, () => Date.now());
+  const petRepository = new SqlPetRepository(local.db);
+  const tamagotchi = new TamagotchiService(petRepository, () => Date.now(), groups);
   const blockBlast = new BlockService(
     blockBlastRepository,
     { now: () => Date.now(), seed: () => Math.floor(Math.random() * 0x100000000) },
@@ -214,6 +221,7 @@ export function createLocalApi(file: string, ownerPreview = false) {
     flappyRepository,
     blockBlastRepository,
     doodleRepository,
+    petRepository,
   );
   const ready = (async () => {
     await adminReady;
@@ -300,6 +308,17 @@ export function createLocalApi(file: string, ownerPreview = false) {
         const method = req.url?.split('?')[0]?.split('/').pop();
         let result: unknown;
         switch (method) {
+          case 'getPet':
+            result = encodePetView(await tamagotchi.get(player));
+            await flushNotifications();
+            break;
+          case 'actPet':
+            result = encodePetView(await tamagotchi.act(player, input));
+            await flushNotifications();
+            break;
+          case 'getPetLeaderboard':
+            result = await tamagotchi.leaderboard(player, input);
+            break;
           case 'getCommunicationLinks':
             result = await communications.links(player);
             break;

@@ -25,6 +25,7 @@ import type { ArcadeRepository, StoredRun } from './repository.ts';
 import type { SnakeRepository, StoredSnake } from './snake.ts';
 import { snakeRecordNotification } from './snake-record-notification.ts';
 import type { SocialJob, SocialRepository } from './social-repository.ts';
+import type { PetRepository, StoredPet } from './tamagotchi.ts';
 import type { TelegramGateway } from './telegram.ts';
 export class MaintenanceService {
   constructor(
@@ -39,7 +40,12 @@ export class MaintenanceService {
     private readonly flappy?: FlappyRepository,
     private readonly blockBlast?: BlockRepository,
     private readonly doodle?: DoodleRepository,
+    private readonly pets?: PetRepository,
   ) {}
+  async petResult(event: StoredPet): Promise<void> {
+    // Drain legacy events without generating pet notifications.
+    if (this.pets && !event.socialProcessed) await this.pets.processed(event.id);
+  }
   private async targetGroups(
     player: Player,
     completedAt: number,
@@ -410,6 +416,17 @@ export class MaintenanceService {
   async sweep(limit = 12): Promise<{ processed: number; deferred: number }> {
     await this.repository.recover2048Expired(this.now());
     let deferred = 0;
+    for (const event of (await this.pets?.pendingResults(3)) ?? []) {
+      try {
+        await this.petResult(event);
+      } catch (error) {
+        deferred++;
+        console.warn(
+          'pet_record_generation_deferred',
+          error instanceof Error ? error.message : 'unknown',
+        );
+      }
+    }
     for (const run of await this.repository.pendingResults(3)) {
       try {
         await this.result(run);
@@ -497,6 +514,10 @@ export class MaintenanceService {
     return { processed, deferred };
   }
   private async execute(job: SocialJob): Promise<void> {
+    if (job.payload.game === 'tamagotchi') {
+      await this.repository.complete(job, 'suppressed', 'Pet notifications disabled');
+      return;
+    }
     if (job.payload.game === 'doodle' && !isDoodleRankedEnabled()) {
       await this.repository.complete(job, 'suppressed', 'Doodle ranking disabled');
       return;

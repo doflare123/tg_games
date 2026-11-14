@@ -5,9 +5,11 @@ import { CATALOG, type GameInfo } from './contracts.ts';
 export type LaunchTarget =
   | { view: 'catalog' }
   | { view: 'admin' }
+  | { view: 'pet' }
   | { view: 'game'; game: GameInfo['id']; mode?: TetrisMode; size?: MineSize; snakeSize?: number }
   | { view: 'leaderboard'; groupId?: number };
 export function parseLaunch(value: unknown): LaunchTarget {
+  if (value === 'pet' || value === 'game_tamagotchi') return { view: 'pet' };
   if (value === 'admin') return { view: 'admin' };
   const snakeSize = SNAKE_SIZES.find((size) => value === `game_snake_${size}`);
   if (snakeSize && CATALOG.some((game) => game.id === 'snake' && game.available))

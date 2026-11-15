@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="80" height="122" viewBox="0 0 80 122">
+  <g transform="matrix(1 .67 0 1 8 4)">
+    <rect width="64" height="70" rx="2" fill="#b8895d"/>
+    <rect x="5" y="5" width="54" height="60" fill="#fff2d5"/>
+    <circle cx="40" cy="23" r="12" fill="#dfac71"/>
+    <path d="M8 62 28 34 44 52 56 39V62Z" fill="#8caa91"/>
+    <path d="m8 62 20-28 9 11-12 17Z" fill="#a9b89c"/>
+  </g>
+</svg>

@@ -1,19 +1,29 @@
 import { AppError } from '../../shared/errors.ts';
 import {
   decodePetState,
+  defaultPetStarters,
   emptyPetWallet,
+  isPetStarter,
+  PET_CARE_COOLDOWN_MS,
   PET_GAMES,
   PET_ITEMS,
   PET_ROOM_INFO,
+  PET_SURFACE_CAPACITY,
   type PetAction,
   type PetCost,
   type PetGame,
+  type PetPlacement,
+  type PetSmallItem,
   type PetState,
+  type PetSurfaceId,
+  type PetSurfaceSlot,
   type PetWallet,
   type PetWish,
+  petCellOccupied,
   petDay,
   petItem,
   petLevel,
+  petSurfaceAccepts,
 } from '../../shared/tamagotchi.ts';
 
 export function petBalance(earned: PetWallet, spent: PetWallet): PetWallet {
@@ -131,10 +141,12 @@ export function newPet(playerId: number, now: number): PetState {
     spent: emptyPetWallet(),
     owned: [],
     placements: [],
+    starterPlacements: defaultPetStarters(),
     theme: 'peach',
     wishes: [],
     completed: [],
     lastCare: 0,
+    careAt: { pet: 0, wash: 0, rest: 0 },
   };
   state.wishes = wishes(state, playerId, emptyPetWallet());
   return state;
@@ -182,7 +194,62 @@ export function applyPetAction(
       boost('joy', item.boost);
     }
   };
+  const followSurface = (item: string, destination?: PetPlacement) => {
+    if (destination) {
+      const follow = <T extends PetPlacement>(p: T): T =>
+        p.on === item ? { ...p, room: destination.room, x: destination.x, y: destination.y } : p;
+      next.placements = next.placements.map(follow);
+      next.starterPlacements = next.starterPlacements.map(follow);
+    } else {
+      next.placements = next.placements.filter((p) => p.on !== item);
+      next.starterPlacements = next.starterPlacements.filter((p) => p.on !== item);
+    }
+  };
+  const attach = (item: PetSmallItem, surface: PetSurfaceId, slot: PetSurfaceSlot) => {
+    if (!isPetStarter(item) && !next.owned.includes(item))
+      throw new AppError('BAD_INPUT', 'Сначала получи этот предмет');
+    if (!petSurfaceAccepts(item, surface) || slot >= PET_SURFACE_CAPACITY[surface])
+      throw new AppError('BAD_INPUT', 'Предмет не помещается на этой поверхности');
+    const all = [...next.placements, ...next.starterPlacements];
+    const parent = all.find((p) => p.item === surface && !p.on);
+    if (!parent) throw new AppError('CONFLICT', 'Сначала поставь мебель с подходящей поверхностью');
+    if (PET_ROOM_INFO[parent.room].level > petLevel(next.xp))
+      throw new AppError('CONFLICT', 'Комната пока закрыта');
+    if (all.some((p) => p.item !== item && p.on === surface && p.slot === slot))
+      throw new AppError('CONFLICT', 'Это место на поверхности уже занято');
+    const placement = { room: parent.room, x: parent.x, y: parent.y, on: surface, slot };
+    next.placements = next.placements.filter((p) => p.item !== item);
+    next.starterPlacements = next.starterPlacements.filter((p) => p.item !== item);
+    if (isPetStarter(item)) next.starterPlacements.push({ ...placement, item });
+    else next.placements.push({ ...placement, item });
+  };
   switch (action.type) {
+    case 'place-on-surface':
+      attach(action.item, action.surface, action.slot);
+      break;
+    case 'place-starter': {
+      if (PET_ROOM_INFO[action.room].level > petLevel(next.xp))
+        throw new AppError('CONFLICT', 'Комната пока закрыта');
+      if (petCellOccupied(next, action.room, action.x, action.y, action.item))
+        throw new AppError('CONFLICT', 'Это место уже занято');
+      const placement = { item: action.item, room: action.room, x: action.x, y: action.y };
+      next.starterPlacements = [
+        ...next.starterPlacements.filter((p) => p.item !== action.item),
+        placement,
+      ];
+      followSurface(action.item, placement);
+      break;
+    }
+    case 'store-starter':
+      next.starterPlacements = next.starterPlacements.filter((p) => p.item !== action.item);
+      followSurface(action.item);
+      break;
+    case 'attach-starter': {
+      const console = next.starterPlacements.find((p) => p.item === 'starter-console');
+      if (!console) throw new AppError('CONFLICT', 'Сначала поставь тумбу в комнату');
+      attach(action.item, 'starter-console', action.item === 'starter-radio' ? 0 : 1);
+      break;
+    }
     case 'species':
       if (next.speciesChosen)
         throw new AppError('CONFLICT', 'Питомец уже выбран. Сменить его нельзя');
@@ -220,32 +287,27 @@ export function applyPetAction(
         throw new AppError('BAD_INPUT', 'Сначала получи этот предмет');
       if (PET_ROOM_INFO[action.room].level > petLevel(next.xp))
         throw new AppError('CONFLICT', 'Комната пока закрыта');
-      if (
-        next.placements.some(
-          (p) =>
-            p.item !== action.item &&
-            p.room === action.room &&
-            p.x === action.x &&
-            p.y === action.y,
-        )
-      )
+      if (petCellOccupied(next, action.room, action.x, action.y, action.item))
         throw new AppError('CONFLICT', 'Это место уже занято');
       next.placements = [
         ...next.placements.filter((p) => p.item !== action.item),
         { item: action.item, room: action.room, x: action.x, y: action.y },
       ];
+      followSurface(action.item, action);
       break;
     }
     case 'store':
       next.placements = next.placements.filter((p) => p.item !== action.item);
+      followSurface(action.item);
       break;
     case 'care': {
-      if (now - next.lastCare < 15_000)
+      if (now - next.careAt[action.care] < PET_CARE_COOLDOWN_MS)
         throw new AppError(
           'RATE_LIMIT',
           'Побудь со мной чуть-чуть. Следующая забота через 15 секунд',
         );
       next.lastCare = now;
+      next.careAt[action.care] = now;
       if (action.care === 'pet') boost('joy', 12);
       if (action.care === 'wash') boost('clean', 25);
       if (action.care === 'rest') boost('energy', 25);

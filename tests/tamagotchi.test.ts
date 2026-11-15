@@ -495,6 +495,261 @@ it('validates furniture ownership, room unlocks, occupied cells and storage', ()
   expect(state.placements).toHaveLength(0);
   expect(state.owned).toContain('rug');
 });
+it('upgrades starter layout without moving existing owned furniture or respawning stored starters', () => {
+  const { starterPlacements: _old, ...legacy } = newPet(1, Date.UTC(2026, 10, 15, 12));
+  legacy.owned = ['rug'];
+  legacy.placements = [{ item: 'rug', room: 'living', x: 4, y: 2 }];
+  const state = decodePetState(legacy);
+  expect(state.placements).toEqual(legacy.placements);
+  expect(state.starterPlacements).toHaveLength(8);
+  expect(state.starterPlacements.filter((p) => !p.on).some((p) => p.x === 4 && p.y === 2)).toBe(
+    false,
+  );
+  expect(decodePetState({ ...state, starterPlacements: [] }).starterPlacements).toEqual([]);
+});
+it('moves cabinet contents together, detaches accessories, and stores or restores starter items without rewards', () => {
+  let state = newPet(1, Date.UTC(2026, 10, 15, 12));
+  const initial = structuredClone(state);
+  const act = (action: PetAction) => {
+    state = applyPetAction(state, action, emptyPetWallet(), Date.UTC(2026, 10, 15, 12));
+  };
+  act({ type: 'place-starter', item: 'starter-console', room: 'living', x: 3, y: 2 });
+  for (const item of ['starter-console', 'starter-radio', 'starter-pot']) {
+    expect(state.starterPlacements.find((p) => p.item === item)).toMatchObject({
+      room: 'living',
+      x: 3,
+      y: 2,
+    });
+  }
+  act({ type: 'place-starter', item: 'starter-radio', room: 'living', x: 0, y: 0 });
+  expect(state.starterPlacements.find((p) => p.item === 'starter-radio')?.on).toBeUndefined();
+  act({ type: 'attach-starter', item: 'starter-radio' });
+  expect(state.starterPlacements.find((p) => p.item === 'starter-radio')).toMatchObject({
+    on: 'starter-console',
+    x: 3,
+    y: 2,
+  });
+  act({ type: 'store-starter', item: 'starter-console' });
+  expect(
+    state.starterPlacements.some((p) =>
+      ['starter-console', 'starter-radio', 'starter-pot'].includes(p.item),
+    ),
+  ).toBe(false);
+  expect(() => act({ type: 'attach-starter', item: 'starter-radio' })).toThrow(
+    'Сначала поставь тумбу',
+  );
+  act({ type: 'place-starter', item: 'starter-console', room: 'living', x: 3, y: 2 });
+  act({ type: 'attach-starter', item: 'starter-pot' });
+  expect(state.xp).toBe(initial.xp);
+  expect(state.spent).toEqual(initial.spent);
+  expect(state.owned).toEqual(initial.owned);
+  expect(state.needs).toEqual(initial.needs);
+});
+it('checks collisions between starter and purchased furniture, room access and invalid starter payloads', () => {
+  const state = newPet(1, Date.UTC(2026, 10, 15, 12));
+  state.owned = ['rug'];
+  expect(() =>
+    applyPetAction(
+      state,
+      { type: 'place', item: 'rug', room: 'living', x: 4, y: 2 },
+      emptyPetWallet(),
+      Date.UTC(2026, 10, 15, 12),
+    ),
+  ).toThrow('занято');
+  expect(() =>
+    applyPetAction(
+      state,
+      { type: 'place-starter', item: 'starter-chair', room: 'bedroom', x: 0, y: 0 },
+      emptyPetWallet(),
+      Date.UTC(2026, 10, 15, 12),
+    ),
+  ).toThrow('закрыта');
+  state.placements = [{ item: 'rug', room: 'living', x: 0, y: 0 }];
+  expect(() =>
+    applyPetAction(
+      state,
+      { type: 'place-starter', item: 'starter-chair', room: 'living', x: 0, y: 0 },
+      emptyPetWallet(),
+      Date.UTC(2026, 10, 15, 12),
+    ),
+  ).toThrow('занято');
+  for (const action of [
+    { type: 'place-starter', item: 'sofa', room: 'living', x: 1, y: 1 },
+    { type: 'place-starter', item: 'starter-console', room: 'living', x: 6, y: 1 },
+    { type: 'attach-starter', item: 'starter-chair' },
+  ])
+    expect(() =>
+      decodePetMutation({ requestId: 'starter_invalid_request', revision: 0, action }),
+    ).toThrow();
+  expect(() =>
+    decodePetState({
+      ...state,
+      starterPlacements: [state.starterPlacements[0], state.starterPlacements[0]],
+    }),
+  ).toThrow();
+});
+it('persists starter moves with authoritative identity and idempotent retries', async () => {
+  const s = await setup();
+  const view = await s.service.get(s.player);
+  const action: PetAction = {
+    type: 'place-starter',
+    item: 'starter-console',
+    room: 'living',
+    x: 3,
+    y: 2,
+  };
+  const next = await s.act(view, action, 'starter_move_retry_request');
+  expect(await s.act(view, action, 'starter_move_retry_request')).toEqual(next);
+  expect((await s.service.get(s.player)).state.starterPlacements).toEqual(
+    next.state.starterPlacements,
+  );
+  expect((await s.service.get({ id: 2, name: 'Other' })).state.starterPlacements).not.toEqual(
+    next.state.starterPlacements,
+  );
+  expect(next.state.xp).toBe(0);
+  expect(await s.db.get('SELECT COUNT(*) AS total FROM social_jobs')).toEqual({ total: 0 });
+});
+it('upgrades legacy attachments to distinct slots and rejects invalid surface relationships', () => {
+  const state = newPet(1, Date.UTC(2026, 10, 15, 12));
+  const legacy = {
+    ...state,
+    starterPlacements: state.starterPlacements.map(({ slot: _slot, ...p }) => p),
+  };
+  const decoded = decodePetState(legacy);
+  expect(decoded.starterPlacements.find((p) => p.item === 'starter-radio')?.slot).toBe(0);
+  expect(decoded.starterPlacements.find((p) => p.item === 'starter-pot')?.slot).toBe(1);
+  expect(() =>
+    decodePetState({
+      ...state,
+      starterPlacements: state.starterPlacements.map((p) =>
+        p.item === 'starter-radio' ? { ...p, slot: null } : p,
+      ),
+    }),
+  ).toThrow();
+  expect(() =>
+    decodePetState({
+      ...state,
+      starterPlacements: state.starterPlacements.map((p) =>
+        p.item === 'starter-pot' ? { ...p, slot: 0 } : p,
+      ),
+    }),
+  ).toThrow('занято');
+  expect(() =>
+    decodePetState({
+      ...state,
+      starterPlacements: state.starterPlacements.filter((p) => p.item !== 'starter-console'),
+    }),
+  ).toThrow('поверхность');
+  for (const action of [
+    { type: 'place-on-surface', item: 'starter-chair', surface: 'starter-table', slot: 0 },
+    { type: 'place-on-surface', item: 'starter-pot', surface: 'sofa', slot: 0 },
+    { type: 'place-on-surface', item: 'starter-pot', surface: 'starter-table', slot: -1 },
+    { type: 'place-on-surface', item: 'starter-pot', surface: 'starter-table', slot: 2 },
+  ])
+    expect(() =>
+      decodePetMutation({ requestId: 'invalid_surface_request', revision: 0, action }),
+    ).toThrow();
+});
+it('checks surface capacity, object size, ownership and occupancy without replacing existing items', () => {
+  const now = Date.UTC(2026, 10, 15, 12);
+  let state = newPet(1, now);
+  state.xp = 180;
+  state.owned = ['wardrobe'];
+  state.placements = [{ item: 'wardrobe', room: 'living', x: 0, y: 2 }];
+  const act = (action: PetAction) => {
+    state = applyPetAction(state, action, emptyPetWallet(), now);
+  };
+  expect(() =>
+    act({ type: 'place-on-surface', item: 'lamp', surface: 'starter-table', slot: 0 }),
+  ).toThrow('получи');
+  expect(() =>
+    act({ type: 'place-on-surface', item: 'starter-radio', surface: 'wardrobe', slot: 0 }),
+  ).toThrow('не помещается');
+  expect(() =>
+    act({ type: 'place-on-surface', item: 'starter-pot', surface: 'wardrobe', slot: 1 }),
+  ).toThrow('не помещается');
+  act({ type: 'place-on-surface', item: 'starter-radio', surface: 'starter-table', slot: 0 });
+  act({ type: 'place-on-surface', item: 'starter-pot', surface: 'starter-table', slot: 1 });
+  const before = structuredClone(state);
+  expect(() =>
+    act({ type: 'place-on-surface', item: 'starter-books', surface: 'starter-table', slot: 0 }),
+  ).toThrow('занято');
+  expect(state).toEqual(before);
+  act({ type: 'place-on-surface', item: 'starter-books', surface: 'wardrobe', slot: 0 });
+  expect(decodePetState(state)).toEqual(state);
+  act({ type: 'place-starter', item: 'starter-books', room: 'living', x: 0, y: 0 });
+  expect(state.starterPlacements.find((p) => p.item === 'starter-books')?.on).toBeUndefined();
+  expect(state.xp).toBe(180);
+  expect(state.spent).toEqual(emptyPetWallet());
+});
+it('moves and stores starter and purchased surface contents together across rooms', () => {
+  const now = Date.UTC(2026, 10, 15, 12);
+  let state = newPet(1, now);
+  state.xp = 180;
+  state.owned = ['lamp', 'wardrobe'];
+  state.placements = [{ item: 'wardrobe', room: 'living', x: 0, y: 2 }];
+  const act = (action: PetAction) => {
+    state = applyPetAction(state, action, emptyPetWallet(), now);
+  };
+  act({ type: 'place-on-surface', item: 'lamp', surface: 'starter-table', slot: 0 });
+  act({ type: 'place-starter', item: 'starter-table', room: 'bedroom', x: 0, y: 0 });
+  expect(state.placements.find((p) => p.item === 'lamp')).toMatchObject({
+    room: 'bedroom',
+    x: 0,
+    y: 0,
+    on: 'starter-table',
+    slot: 0,
+  });
+  act({ type: 'store-starter', item: 'starter-table' });
+  expect(state.placements.some((p) => p.item === 'lamp')).toBe(false);
+  expect(state.owned).toContain('lamp');
+  act({ type: 'place-on-surface', item: 'starter-books', surface: 'wardrobe', slot: 0 });
+  act({ type: 'place', item: 'wardrobe', room: 'bedroom', x: 1, y: 0 });
+  expect(state.starterPlacements.find((p) => p.item === 'starter-books')).toMatchObject({
+    room: 'bedroom',
+    x: 1,
+    y: 0,
+    on: 'wardrobe',
+  });
+  act({ type: 'store', item: 'wardrobe' });
+  expect(state.starterPlacements.some((p) => p.item === 'starter-books')).toBe(false);
+  expect(state.owned).toContain('wardrobe');
+  expect(decodePetState(state)).toEqual(state);
+});
+it('reserves surface slots atomically and replays the winning request without duplication', async () => {
+  const s = await setup();
+  const before = await s.service.get(s.player);
+  const requests = [
+    {
+      requestId: 'surface_race_pot_request',
+      revision: before.revision,
+      action: { type: 'place-on-surface', item: 'starter-pot', surface: 'starter-table', slot: 0 },
+    },
+    {
+      requestId: 'surface_race_books_request',
+      revision: before.revision,
+      action: {
+        type: 'place-on-surface',
+        item: 'starter-books',
+        surface: 'starter-table',
+        slot: 0,
+      },
+    },
+  ];
+  const results = await Promise.allSettled(
+    requests.map((request) => s.service.act(s.player, request)),
+  );
+  expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+  expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
+  const winner = results.findIndex((r) => r.status === 'fulfilled');
+  const fresh = await s.service.get(s.player);
+  expect(
+    fresh.state.starterPlacements.filter((p) => p.on === 'starter-table' && p.slot === 0),
+  ).toHaveLength(1);
+  expect(await s.service.act(s.player, requests[winner])).toEqual(fresh);
+  expect(fresh.state.xp).toBe(before.state.xp);
+  expect(fresh.wallet).toEqual(before.wallet);
+});
 it('uses server time for day rollover, bounded need decay and free care cooldowns', () => {
   const now = Date.UTC(2026, 10, 14, 2);
   expect(petDay(now - 1)).toBe(petDay(now) - 1);
@@ -512,11 +767,76 @@ it('uses server time for day rollover, bounded need decay and free care cooldown
   expect(() =>
     applyPetAction(
       cared,
-      { type: 'care', care: 'pet' },
+      { type: 'care', care: 'wash' },
       emptyPetWallet(),
       now + 100 * PET_DAY + 100,
     ),
   ).toThrow('15');
+  const petted = applyPetAction(
+    cared,
+    { type: 'care', care: 'pet' },
+    emptyPetWallet(),
+    now + 100 * PET_DAY + 100,
+  );
+  const rested = applyPetAction(
+    petted,
+    { type: 'care', care: 'rest' },
+    emptyPetWallet(),
+    now + 100 * PET_DAY + 100,
+  );
+  expect(rested.needs).toEqual({ food: 20, joy: 32, energy: 45, clean: 45 });
+  expect(rested.careAt).toEqual({
+    wash: now + 100 * PET_DAY,
+    pet: now + 100 * PET_DAY + 100,
+    rest: now + 100 * PET_DAY + 100,
+  });
+  expect(rested.xp).toBe(0);
+  expect(
+    applyPetAction(
+      rested,
+      { type: 'care', care: 'wash' },
+      emptyPetWallet(),
+      now + 100 * PET_DAY + 15_000,
+    ).needs.clean,
+  ).toBe(70);
+});
+it('upgrades old care timestamps without coupling petting, washing and resting', () => {
+  const { careAt: _times, ...legacy } = newPet(1, Date.UTC(2026, 10, 14, 12));
+  legacy.lastCare = legacy.updatedAt;
+  const restored = decodePetState(legacy);
+  expect(restored.careAt).toEqual({ pet: 0, wash: 0, rest: 0 });
+  expect(() =>
+    applyPetAction(restored, { type: 'care', care: 'rest' }, emptyPetWallet(), legacy.updatedAt),
+  ).not.toThrow();
+  expect(() => decodePetState({ ...legacy, careAt: { pet: -1, wash: 0, rest: 0 } })).toThrow();
+});
+it('saves independent care with authoritative cooldowns and deduplicates a lost response', async () => {
+  const s = await setup();
+  let view = await s.service.get(s.player);
+  const input = {
+    requestId: 'care_retry_same_request',
+    revision: view.revision,
+    action: { type: 'care', care: 'pet' },
+  };
+  const petted = await s.service.act(s.player, input);
+  view = await s.act(petted, { type: 'care', care: 'wash' });
+  view = await s.act(view, { type: 'care', care: 'rest' });
+  expect(view.revision).toBe(3);
+  expect(view.state.careAt).toEqual({ pet: s.now(), wash: s.now(), rest: s.now() });
+  expect(view.state.needs).toEqual({ food: 75, joy: 92, energy: 100, clean: 100 });
+  expect(view.state.xp).toBe(0);
+  expect(view.wallet).toEqual(emptyPetWallet());
+  expect(await s.service.act(s.player, input)).toEqual(view);
+  await expect(
+    s.service.act(s.player, {
+      requestId: 'care_forced_time_request',
+      revision: view.revision,
+      action: { type: 'care', care: 'pet', now: s.now() + PET_DAY },
+    }),
+  ).rejects.toMatchObject({ code: 'RATE_LIMIT' });
+  expect((await s.service.get(s.player)).revision).toBe(3);
+  s.advance(15_000);
+  expect((await s.act(view, { type: 'care', care: 'pet' })).state.needs.joy).toBe(100);
 });
 it('keeps identities isolated and ranks only server-earned care, respecting membership and moderation', async () => {
   const s = await setup();

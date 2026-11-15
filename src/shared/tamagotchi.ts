@@ -11,6 +11,10 @@ export const PET_GAME_INFO: Record<PetGame, { title: string; unit: number }> = {
   flappy: { title: 'Flappy Bird', unit: 15 },
 };
 export type PetWallet = Record<PetGame, { sparks: number; attempts: number }>;
+export const PET_CARE_KINDS = ['pet', 'wash', 'rest'] as const;
+export type PetCare = (typeof PET_CARE_KINDS)[number];
+export const PET_CARE_COOLDOWN_MS = 15_000;
+export type PetCareTimes = Record<PetCare, number>;
 export const PET_SPECIES = ['cat', 'fox', 'rabbit', 'panda', 'dog', 'axolotl'] as const;
 export type PetSpecies = (typeof PET_SPECIES)[number];
 export const PET_SPECIES_INFO: Record<PetSpecies, { title: string; description: string }> = {
@@ -204,11 +208,136 @@ export interface PetWish {
   cost: PetCost;
   xp: number;
 }
+export const PET_SURFACE_IDS = ['starter-console', 'starter-table', 'wardrobe', 'books'] as const;
+export type PetSurfaceId = (typeof PET_SURFACE_IDS)[number];
+export type PetSurfaceSlot = 0 | 1;
+export const PET_SMALL_ITEMS = ['starter-radio', 'starter-pot', 'starter-books', 'lamp'] as const;
+export type PetSmallItem = (typeof PET_SMALL_ITEMS)[number];
+export const PET_SURFACE_CAPACITY: Record<PetSurfaceId, 1 | 2> = {
+  'starter-console': 2,
+  'starter-table': 2,
+  wardrobe: 1,
+  books: 1,
+};
+export function isPetSmallItem(item: string): item is PetSmallItem {
+  return PET_SMALL_ITEMS.some((id) => id === item);
+}
+export function isPetSurface(item: string): item is PetSurfaceId {
+  return PET_SURFACE_IDS.some((id) => id === item);
+}
+export function petSurfaceAccepts(item: string, surface: PetSurfaceId): boolean {
+  return (
+    isPetSmallItem(item) &&
+    (item !== 'starter-radio' || surface === 'starter-console' || surface === 'starter-table')
+  );
+}
 export interface PetPlacement {
   item: string;
   room: PetRoom;
   x: number;
   y: number;
+  on?: PetSurfaceId;
+  slot?: PetSurfaceSlot;
+}
+export const PET_STARTER_IDS = [
+  'starter-rug',
+  'starter-chair',
+  'starter-table',
+  'starter-console',
+  'starter-radio',
+  'starter-pot',
+  'starter-books',
+  'starter-plant',
+] as const;
+export type PetStarterId = (typeof PET_STARTER_IDS)[number];
+export const PET_STARTER_INFO: Record<
+  PetStarterId,
+  { id: PetStarterId; title: string; icon: string }
+> = {
+  'starter-rug': { id: 'starter-rug', title: 'Домашний ковёр', icon: '' },
+  'starter-chair': { id: 'starter-chair', title: 'Красное кресло', icon: '' },
+  'starter-table': { id: 'starter-table', title: 'Журнальный столик', icon: '' },
+  'starter-console': { id: 'starter-console', title: 'Деревянная тумба', icon: '' },
+  'starter-radio': { id: 'starter-radio', title: 'Радио', icon: '' },
+  'starter-pot': { id: 'starter-pot', title: 'Маленький горшок', icon: '' },
+  'starter-books': { id: 'starter-books', title: 'Стопка книг', icon: '' },
+  'starter-plant': { id: 'starter-plant', title: 'Домашнее растение', icon: '' },
+};
+export function isPetStarter(id: string): id is PetStarterId {
+  return PET_STARTER_IDS.some((item) => item === id);
+}
+export interface PetStarterPlacement extends PetPlacement {
+  item: PetStarterId;
+}
+export function defaultPetStarters(
+  placements: readonly PetPlacement[] = [],
+): PetStarterPlacement[] {
+  const result: PetStarterPlacement[] = [];
+  const defaults = [
+    ['starter-rug', 4, 0],
+    ['starter-chair', 1, 0],
+    ['starter-table', 2, 0],
+    ['starter-console', 4, 2],
+    ['starter-books', 5, 0],
+    ['starter-plant', 0, 1],
+  ] as const;
+  for (const [item, x, y] of defaults) {
+    const cells: { x: number; y: number }[] = [{ x, y }];
+    for (let row = 2; row >= 0; row--)
+      for (let column = 0; column < 6; column++) cells.push({ x: column, y: row });
+    const cell = cells.find(
+      (cell) =>
+        ![...placements, ...result].some(
+          (p) => p.room === 'living' && p.x === cell.x && p.y === cell.y,
+        ),
+    );
+    if (cell) result.push({ item, room: 'living', ...cell });
+  }
+  const console = result.find((p) => p.item === 'starter-console');
+  if (console)
+    for (const item of ['starter-radio', 'starter-pot'] as const)
+      result.push({
+        ...console,
+        item,
+        on: 'starter-console',
+        slot: item === 'starter-radio' ? 0 : 1,
+      });
+  return result;
+}
+export function petCellOccupied(
+  state: Pick<PetState, 'placements' | 'starterPlacements'>,
+  room: PetRoom,
+  x: number,
+  y: number,
+  except: string,
+): boolean {
+  return [...state.placements, ...state.starterPlacements]
+    .filter((p) => !p.on)
+    .some((p) => p.item !== except && p.room === room && p.x === x && p.y === y);
+}
+export function petSurfaceTargets(
+  state: Pick<PetState, 'placements' | 'starterPlacements'>,
+  item: string,
+  room: PetRoom,
+): { parent: PetPlacement & { item: PetSurfaceId }; slot: PetSurfaceSlot; occupied: boolean }[] {
+  const all = [...state.placements, ...state.starterPlacements];
+  return all.flatMap((parent) => {
+    if (
+      !isPetSurface(parent.item) ||
+      parent.room !== room ||
+      parent.on ||
+      !petSurfaceAccepts(item, parent.item)
+    )
+      return [];
+    const surface = { ...parent, item: parent.item };
+    return ([0, 1] as const)
+      .filter((slot) => slot < PET_SURFACE_CAPACITY[surface.item])
+      .map((slot) => ({
+        parent: surface,
+        slot,
+        occupied: all.some((p) => p.item !== item && p.on === surface.item && p.slot === slot),
+      }));
+  });
 }
 export interface PetState {
   version: 1;
@@ -225,10 +354,12 @@ export interface PetState {
   spent: PetWallet;
   owned: string[];
   placements: PetPlacement[];
+  starterPlacements: PetStarterPlacement[];
   theme: 'peach' | 'mint' | 'lavender';
   wishes: PetWish[];
   completed: string[];
   lastCare: number;
+  careAt: PetCareTimes;
 }
 export interface PetView {
   revision: number;
@@ -259,7 +390,11 @@ export type PetAction =
   | { type: 'buy'; item: string }
   | { type: 'place'; item: string; room: PetRoom; x: number; y: number }
   | { type: 'store'; item: string }
-  | { type: 'care'; care: 'pet' | 'wash' | 'rest' }
+  | { type: 'place-starter'; item: PetStarterId; room: PetRoom; x: number; y: number }
+  | { type: 'store-starter'; item: PetStarterId }
+  | { type: 'attach-starter'; item: 'starter-radio' | 'starter-pot' }
+  | { type: 'place-on-surface'; item: PetSmallItem; surface: PetSurfaceId; slot: PetSurfaceSlot }
+  | { type: 'care'; care: PetCare }
   | { type: 'rename'; name: string }
   | { type: 'theme'; theme: PetState['theme'] };
 export interface PetMutation {
@@ -330,17 +465,45 @@ function itemId(value: unknown): string {
 }
 export function decodePetPlacement(value: unknown): PetPlacement {
   const r = object(value);
-  return {
+  const placement: PetPlacement = {
     item: itemId(r.item),
     room: oneOf(r.room, PET_ROOMS),
     x: integer(r.x, 0, 5),
     y: integer(r.y, 0, 2),
   };
+  decodeSurface(placement, r);
+  return placement;
 }
 export function decodePetState(value: unknown): PetState {
   const r = object(value);
   if (r.version !== 1) throw new AppError('BAD_INPUT', 'Неизвестная версия питомца');
   const needs = object(r.needs);
+  const placements = list(r.placements, 30, decodePetPlacement);
+  const starterPlacements =
+    r.starterPlacements === undefined
+      ? defaultPetStarters(placements)
+      : list(r.starterPlacements, PET_STARTER_IDS.length, decodePetStarterPlacement);
+  if (new Set(starterPlacements.map((p) => p.item)).size !== starterPlacements.length)
+    throw new AppError('BAD_INPUT', 'Повтор стартового предмета');
+  const allPlacements = [...placements, ...starterPlacements];
+  const occupiedSurfaces = new Set<string>();
+  for (const placement of allPlacements) {
+    if (!placement.on) continue;
+    if (
+      !allPlacements.some(
+        (p) =>
+          p.item === placement.on &&
+          !p.on &&
+          p.room === placement.room &&
+          p.x === placement.x &&
+          p.y === placement.y,
+      )
+    )
+      throw new AppError('BAD_INPUT', 'Для предмета нужна подходящая поверхность');
+    const key = `${placement.on}:${placement.slot}`;
+    if (occupiedSurfaces.has(key)) throw new AppError('BAD_INPUT', 'Место на поверхности занято');
+    occupiedSurfaces.add(key);
+  }
   return {
     version: 1,
     species: r.species === undefined ? 'cat' : oneOf(r.species, PET_SPECIES),
@@ -360,7 +523,8 @@ export function decodePetState(value: unknown): PetState {
     },
     spent: decodePetWallet(r.spent),
     owned: list(r.owned, 30, itemId),
-    placements: list(r.placements, 30, decodePetPlacement),
+    placements,
+    starterPlacements,
     theme: oneOf(r.theme, ['peach', 'mint', 'lavender']),
     wishes: list(r.wishes, 3, (value) => {
       const w = object(value);
@@ -374,6 +538,7 @@ export function decodePetState(value: unknown): PetState {
     }),
     completed: list(r.completed, 3, (value) => text(value, 1, 80)),
     lastCare: counter(r.lastCare),
+    careAt: r.careAt === undefined ? { pet: 0, wash: 0, rest: 0 } : decodeCareTimes(r.careAt),
   };
 }
 export function decodePetView(value: unknown): PetView {
@@ -401,9 +566,36 @@ export function decodePetMutation(value: unknown): PetMutation {
     'rename',
     'theme',
     'species',
+    'place-starter',
+    'store-starter',
+    'attach-starter',
+    'place-on-surface',
   ]);
   let action: PetAction;
   switch (type) {
+    case 'place-on-surface':
+      action = {
+        type,
+        item: oneOf(a.item, PET_SMALL_ITEMS),
+        surface: oneOf(a.surface, PET_SURFACE_IDS),
+        slot: integer(a.slot, 0, 1) as PetSurfaceSlot,
+      };
+      break;
+    case 'place-starter':
+      action = {
+        type,
+        item: oneOf(a.item, PET_STARTER_IDS),
+        room: oneOf(a.room, PET_ROOMS),
+        x: integer(a.x, 0, 5),
+        y: integer(a.y, 0, 2),
+      };
+      break;
+    case 'store-starter':
+      action = { type, item: oneOf(a.item, PET_STARTER_IDS) };
+      break;
+    case 'attach-starter':
+      action = { type, item: oneOf(a.item, ['starter-radio', 'starter-pot']) };
+      break;
     case 'species':
       action = { type, species: oneOf(a.species, PET_SPECIES) };
       break;
@@ -415,10 +607,17 @@ export function decodePetMutation(value: unknown): PetMutation {
       action = { type, item: itemId(a.item) };
       break;
     case 'place':
-      action = { type, ...decodePetPlacement(a) };
+      // Floor placement never accepts a client-supplied attachment.
+      action = {
+        type,
+        item: itemId(a.item),
+        room: oneOf(a.room, PET_ROOMS),
+        x: integer(a.x, 0, 5),
+        y: integer(a.y, 0, 2),
+      };
       break;
     case 'care':
-      action = { type, care: oneOf(a.care, ['pet', 'wash', 'rest']) };
+      action = { type, care: oneOf(a.care, PET_CARE_KINDS) };
       break;
     case 'rename': {
       const name = text(a.name, 1, 48).trim();
@@ -433,7 +632,46 @@ export function decodePetMutation(value: unknown): PetMutation {
   }
   return { requestId, revision: counter(r.revision), action };
 }
+function decodePetStarterPlacement(value: unknown): PetStarterPlacement {
+  const r = object(value);
+  const item = oneOf(r.item, PET_STARTER_IDS);
+  const placement: PetStarterPlacement = {
+    item,
+    room: oneOf(r.room, PET_ROOMS),
+    x: integer(r.x, 0, 5),
+    y: integer(r.y, 0, 2),
+  };
+  decodeSurface(placement, r);
+  return placement;
+}
+function decodeSurface(placement: PetPlacement, r: Record<string, unknown>): void {
+  if (r.on === undefined) {
+    if (r.slot !== undefined) throw new AppError('BAD_INPUT', 'Место требует поверхность');
+    return;
+  }
+  const surface = oneOf(r.on, PET_SURFACE_IDS);
+  if (!petSurfaceAccepts(placement.item, surface))
+    throw new AppError('BAD_INPUT', 'Предмет не помещается на этой поверхности');
+  // Older saves attached these two starter props to the console without slots.
+  const legacySlot =
+    surface === 'starter-console' && placement.item === 'starter-radio'
+      ? 0
+      : surface === 'starter-console' && placement.item === 'starter-pot'
+        ? 1
+        : undefined;
+  const slot = integer(
+    r.slot === undefined ? legacySlot : r.slot,
+    0,
+    PET_SURFACE_CAPACITY[surface] - 1,
+  ) as PetSurfaceSlot;
+  placement.on = surface;
+  placement.slot = slot;
+}
 function decodeFlag(value: unknown): boolean {
   if (typeof value !== 'boolean') throw new AppError('BAD_INPUT', 'Некорректный выбор питомца');
   return value;
+}
+function decodeCareTimes(value: unknown): PetCareTimes {
+  const r = object(value);
+  return { pet: counter(r.pet), wash: counter(r.wash), rest: counter(r.rest) };
 }

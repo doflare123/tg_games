@@ -310,11 +310,9 @@ export function createLocalApi(file: string, ownerPreview = false) {
         switch (method) {
           case 'getPet':
             result = encodePetView(await tamagotchi.get(player));
-            await flushNotifications();
             break;
           case 'actPet':
             result = encodePetView(await tamagotchi.act(player, input));
-            await flushNotifications();
             break;
           case 'getPetLeaderboard':
             result = await tamagotchi.leaderboard(player, input);

@@ -10,6 +10,7 @@ export interface JobPayload {
     | 'flappy'
     | 'doodle'
     | 'block-blast'
+    | 'doom'
     | 'tamagotchi';
   chatId: number;
   playerId: number;

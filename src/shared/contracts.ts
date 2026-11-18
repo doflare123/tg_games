@@ -13,6 +13,14 @@ import type {
 import type { BlockBoard, BlockMoves, BlockRun } from './block-blast.ts';
 import type { DoodleBoard, DoodleReplay, DoodleRuleset, DoodleRun } from './doodle.ts';
 import { isDoodleRankedEnabled } from './doodle-policy.ts';
+import type {
+  DoomBoard,
+  DoomBoardInput,
+  DoomProgress,
+  DoomRun,
+  DoomSkill,
+  DoomUpload,
+} from './doom.ts';
 import type { FlappyBoard, FlappyReplay, FlappyRun } from './flappy.ts';
 import type { GroupView } from './groups.ts';
 import type { MineLeaderboard, MineResult, MineResultInput } from './minesweeper.ts';
@@ -88,6 +96,13 @@ export const CATALOG: readonly GameInfo[] = [
     available: true,
     ranked: true,
   },
+  {
+    id: 'doom',
+    title: 'Freedoom',
+    subtitle: 'Первый эпизод · время уровней и всей кампании',
+    available: true,
+    ranked: true,
+  },
 ];
 export type RunStatus = 'active' | 'verified' | 'unranked' | 'abandoned';
 export interface RunView {
@@ -127,6 +142,12 @@ export interface LeaderboardView {
   me: LeaderboardEntry | null;
 }
 export interface Endpoints {
+  createDoomRun: { input: { requestId: string; skill: DoomSkill }; output: DoomRun };
+  getDoomProgress: { input: { runId?: string }; output: DoomProgress | null };
+  appendDoomCommands: { input: DoomUpload; output: DoomRun };
+  interruptDoomRun: { input: { runId: string; atTick?: number }; output: DoomRun };
+  verifyDoomRun: { input: { runId: string }; output: DoomRun };
+  getDoomLeaderboard: { input: DoomBoardInput; output: DoomBoard };
   getPet: { input: Record<string, never>; output: PetWireView };
   actPet: { input: PetMutation; output: PetWireView };
   getPetLeaderboard: { input: { period: Period; groupId?: number }; output: BlockBoard };

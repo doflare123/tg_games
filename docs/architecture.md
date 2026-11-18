@@ -26,7 +26,7 @@ The leaderboard queries verified runs only, selects the best run per user and ap
 
 ## Game integrations
 
-NES and Doom run in ordinary practice mode. Their save states do not become verified runs. NES saves are keyed by ROM SHA-256. Doom runs in a disposable same-origin iframe, and only validated messages from that iframe are accepted. Its engine source and compiler are pinned; ROM/IWAD files are supplied locally and never uploaded.
+NES remains a hidden practice adapter with ROM-keyed local saves. Freedoom Phase 1 episode 1 runs in a disposable same-origin iframe with a server-hosted, SHA-256-pinned IWAD. The browser records fixed 35 Hz control commands. Uploads only append the durable log; a separate request replays its accepted prefix in a fresh headless WASM instance and derives map/episode results. Client save files and claimed metrics are not accepted. Pauses and restores exclude the interrupted map and the campaign, while later complete maps remain eligible. See [Doom rules and operational limits](doom.md).
 
 The Doom engine is built with Emscripten and SDL. MIDI instrument patches are not included yet. The iframe uses a native module-script loader so Vite does not try to transform generated engine code. The iframe is removed on disposal to release the WASM heap, event loop and audio context with its document.
 
@@ -44,7 +44,7 @@ These checks do not establish actual Telegram runtime quotas, migration behavior
 
 1. Link the new test bot through the CLI, deploy and migrate explicitly; test endpoints and update handlers inside Telegram.
 2. Measure invocation limits, database capacity and latency at expected concurrency. Exercise SQL RETURNING and window queries on the real platform.
-3. Freeze original Mario/Doom content revisions and metric extraction rules. Prove headless replay compatibility before enabling their ranked modes.
+3. Mario still needs frozen content and authoritative verification. Freedoom has pinned content and browser/headless replay checks; validate actual cloud WASM/crypto, resource limits and full real-map play before a public cloud rollout.
 4. Group scopes and notifications are implemented; verify the native ephemeral API and membership updates on a live bot. Add seasons, history UI and invalidation tools. See groups-and-controls.md for the membership and notification policy.
 5. Define retention/cleanup and backups for abandoned runs and replay archives before public rollout. This first version does not silently delete player records.
 6. Add Doom MIDI patches, further touch ergonomics, target-device performance checks and accessibility passes before calling the original-game integrations complete.

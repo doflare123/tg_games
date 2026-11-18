@@ -1608,9 +1608,8 @@ describe('native private game commands', () => {
     expect(s.sent).toHaveLength(0);
     await s.bot.configure();
     expect(s.commands[0]?.commands.every((c) => c.is_ephemeral)).toBe(true);
-    expect(
-      s.commands[0]?.commands.some((c) => c.command === 'game_doom' || c.command === 'game_mario'),
-    ).toBe(false);
+    expect(s.commands[0]?.commands.some((c) => c.command === 'game_doom')).toBe(false);
+    expect(s.commands[0]?.commands.some((c) => c.command === 'game_mario')).toBe(false);
     expect(s.commands.some((entry) => entry.chatId === -100)).toBe(true);
   });
 });

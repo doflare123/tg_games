@@ -1,10 +1,12 @@
 import type { TetrisMode } from '../../games/tetris/types.ts';
+import { canAccessDoom } from '../../shared/doom-policy.ts';
 import type { GroupView } from '../../shared/groups.ts';
 import { api, hasApi } from '../platform/api.ts';
 import { mount2048Leaderboard } from './2048-leaderboard.ts';
 import { mountBlockLeaderboard } from './block-blast-leaderboard.ts';
 import { button, element, errorMessage, formatTime } from './dom.ts';
 import { mountDoodleLeaderboard } from './doodle-leaderboard.ts';
+import { mountDoomLeaderboard } from './doom-leaderboard.ts';
 import { mountFlappyLeaderboard } from './flappy-leaderboard.ts';
 import { mountMineLeaderboard } from './mine-leaderboard.ts';
 import { mountSnakeLeaderboard } from './snake-leaderboard.ts';
@@ -22,7 +24,9 @@ export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): ()
     ['flappy', 'Flappy Bird'],
     ['doodle', 'Doodle Jump'],
     ['block-blast', 'Block Blast'],
+    ['doom', 'Freedoom'],
   ]) {
+    if (value === 'doom' && !canAccessDoom(false)) continue;
     const option = element('option', '', label);
     option.value = value ?? 'tetris';
     picker.append(option);
@@ -36,24 +40,40 @@ export function mountLeaderboard(host: HTMLElement, initialGroupId?: number): ()
     selectedGroupId = id;
   };
   let dispose = mountTetrisLeaderboard(content, selectedGroupId, onGroupChange);
+  let closed = false;
+  if (hasApi && !canAccessDoom(false))
+    void api
+      .profile()
+      .then((player) => {
+        if (closed || !canAccessDoom(player.isAdmin)) return;
+        const option = element('option', '', 'Freedoom');
+        option.value = 'doom';
+        picker.append(option);
+      })
+      .catch(() => {});
   picker.addEventListener('change', () => {
     dispose();
     dispose =
-      picker.value === 'doodle'
-        ? mountDoodleLeaderboard(content, selectedGroupId, onGroupChange)
-        : picker.value === 'block-blast'
-          ? mountBlockLeaderboard(content, selectedGroupId, onGroupChange)
-          : picker.value === 'flappy'
-            ? mountFlappyLeaderboard(content, selectedGroupId, onGroupChange)
-            : picker.value === 'snake'
-              ? mountSnakeLeaderboard(content, selectedGroupId, onGroupChange)
-              : picker.value === '2048'
-                ? mount2048Leaderboard(content, selectedGroupId, onGroupChange)
-                : picker.value === 'minesweeper'
-                  ? mountMineLeaderboard(content, selectedGroupId, onGroupChange)
-                  : mountTetrisLeaderboard(content, selectedGroupId, onGroupChange);
+      picker.value === 'doom'
+        ? mountDoomLeaderboard(content, selectedGroupId, onGroupChange)
+        : picker.value === 'doodle'
+          ? mountDoodleLeaderboard(content, selectedGroupId, onGroupChange)
+          : picker.value === 'block-blast'
+            ? mountBlockLeaderboard(content, selectedGroupId, onGroupChange)
+            : picker.value === 'flappy'
+              ? mountFlappyLeaderboard(content, selectedGroupId, onGroupChange)
+              : picker.value === 'snake'
+                ? mountSnakeLeaderboard(content, selectedGroupId, onGroupChange)
+                : picker.value === '2048'
+                  ? mount2048Leaderboard(content, selectedGroupId, onGroupChange)
+                  : picker.value === 'minesweeper'
+                    ? mountMineLeaderboard(content, selectedGroupId, onGroupChange)
+                    : mountTetrisLeaderboard(content, selectedGroupId, onGroupChange);
   });
-  return () => dispose();
+  return () => {
+    closed = true;
+    dispose();
+  };
 }
 function mountTetrisLeaderboard(
   host: HTMLElement,

@@ -1,4 +1,60 @@
 import { index, integer, table, text, uniqueIndex } from 'sdk/db';
+export const doomAssets = table('doom_assets', {
+  id: text('id').primaryKey(),
+  data: text('data').notNull(),
+});
+export const doomRuns = table(
+  'doom_runs',
+  {
+    id: text('id').primaryKey(),
+    playerId: integer('player_id').notNull(),
+    playerName: text('player_name').notNull(),
+    ruleset: text('ruleset').notNull(),
+    skill: text('skill').notNull(),
+    revision: integer('revision').notNull().default(0),
+    acceptedTicks: integer('accepted_ticks').notNull().default(0),
+    verifiedTicks: integer('verified_ticks').notNull().default(0),
+    continuous: integer('continuous').notNull().default(1),
+    status: text('status').notNull().default('active'),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    sessionTick: integer('session_tick').notNull().default(0),
+    sessionAt: integer('session_at').notNull(),
+    breaksJson: text('breaks_json').notNull().default('[]'),
+    commandsJson: text('commands_json').notNull().default('[]'),
+    lastSubmission: text('last_submission'),
+    leaseUntil: integer('lease_until').notNull().default(0),
+    retryAt: integer('retry_at').notNull().default(0),
+  },
+  (t) => ({
+    player: index('doom_runs_player').on(t.playerId, t.createdAt),
+    pending: index('doom_runs_pending').on(t.status, t.retryAt, t.leaseUntil),
+  }),
+);
+export const doomResults = table(
+  'doom_results',
+  {
+    id: text('id').primaryKey(),
+    runId: text('run_id').notNull(),
+    playerId: integer('player_id').notNull(),
+    playerName: text('player_name').notNull(),
+    ruleset: text('ruleset').notNull(),
+    skill: text('skill').notNull(),
+    target: text('target').notNull(),
+    category: text('category').notNull(),
+    ticks: integer('ticks').notNull(),
+    createdAt: integer('created_at').notNull(),
+    verifiedAt: integer('verified_at').notNull(),
+    verifiedOrder: integer('verified_order').notNull(),
+    socialProcessed: integer('social_processed').notNull().default(0),
+    startTick: integer('start_tick').notNull(),
+    endTick: integer('end_tick').notNull(),
+  },
+  (t) => ({
+    board: index('doom_results_board').on(t.ruleset, t.skill, t.target, t.category, t.ticks),
+    social: index('doom_results_social').on(t.socialProcessed, t.verifiedOrder),
+  }),
+);
 export const petEvents = table(
   'pet_events',
   {

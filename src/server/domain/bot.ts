@@ -1,17 +1,20 @@
 import { CATALOG, type Player } from '../../shared/contracts.ts';
+import { canAccessDoom } from '../../shared/doom-policy.ts';
 import { AppError, integer, object, text } from '../../shared/errors.ts';
 import { launchUrl, parseLaunch } from '../../shared/launch.ts';
-import { OWNER_ID } from './admin.ts';
+import { isAdmin, OWNER_ID } from './admin.ts';
 import type { GroupService } from './groups.ts';
 import type { SocialRepository } from './social-repository.ts';
 import type { LaunchButton, TelegramCommand, TelegramGateway } from './telegram.ts';
 export const GAME_COMMANDS: TelegramCommand[] = [
   { command: 'pet', description: 'Питомец, желания и уютный дом', is_ephemeral: true },
-  ...CATALOG.filter((game) => game.available).map((game) => ({
-    command: `game_${game.id.replaceAll('-', '_')}`,
-    description: `Сразу открыть ${game.title}`,
-    is_ephemeral: true,
-  })),
+  ...CATALOG.filter((game) => game.available && (game.id !== 'doom' || canAccessDoom(false))).map(
+    (game) => ({
+      command: `game_${game.id.replaceAll('-', '_')}`,
+      description: `Сразу открыть ${game.title}`,
+      is_ephemeral: true,
+    }),
+  ),
   { command: 'game_top', description: 'Рейтинг этой группы', is_ephemeral: true },
   {
     command: 'game_notify_here',
@@ -54,7 +57,11 @@ export class GameBotService {
       ];
       await this.telegram.privateCommands(commands);
       await this.telegram.commands(
-        [...commands, { command: 'admin', description: 'Обращения и рассылки' }],
+        [
+          ...commands,
+          { command: 'admin', description: 'Обращения и рассылки' },
+          { command: 'game_doom', description: 'Freedoom (закрытый тест)' },
+        ],
         OWNER_ID,
       );
     }
@@ -120,6 +127,13 @@ export class GameBotService {
       const parameter = body.slice(match[0].length).trim().split(/\s/, 1)[0];
       if (parameter && parseLaunch(parameter).view !== 'catalog') target = parameter;
     }
+    const destination = parseLaunch(target);
+    if (
+      destination.view === 'game' &&
+      destination.game === 'doom' &&
+      !canAccessDoom(isAdmin(player))
+    )
+      return;
     let response = 'Открыть Arcade';
     let message = 'Выбери игру и играй прямо в Telegram.';
     if (command === 'pet') {

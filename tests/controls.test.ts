@@ -27,7 +27,7 @@ it('keeps shared keys pressed until all pointers and sticks release them', () =>
 it('supports diagonals, dead zones and deterministic direct-game routing', () => {
   expect(directions(0.1, -0.1)).toEqual({ left: false, right: false, up: false, down: false });
   expect(directions(-0.8, 0.8)).toEqual({ left: true, right: false, up: true, down: false });
-  expect(parseLaunch('game_doom')).toEqual({ view: 'catalog' });
+  expect(parseLaunch('game_doom')).toEqual({ view: 'game', game: 'doom' });
   expect(parseLaunch('game_mario')).toEqual({ view: 'catalog' });
   expect(parseLaunch('game_tetris')).toEqual({ view: 'game', game: 'tetris' });
   expect(parseLaunch('game_minesweeper')).toEqual({ view: 'game', game: 'minesweeper' });

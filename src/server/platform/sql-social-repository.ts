@@ -40,6 +40,7 @@ function decodeJob(value: unknown): SocialJob {
             'flappy',
             'doodle',
             'block-blast',
+            'doom',
             'tamagotchi',
           ]),
     chatId,

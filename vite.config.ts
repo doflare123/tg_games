@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 import { createLocalApi } from './scripts/local-api.ts';
@@ -26,6 +27,15 @@ function localApi(): Plugin {
   };
 }
 export default defineConfig({
+  resolve: {
+    alias: {
+      'doom-headless-engine': resolve(
+        existsSync('public/engines/doom/verify.js')
+          ? 'public/engines/doom/verify.js'
+          : 'src/server/platform/doom-unavailable.ts',
+      ),
+    },
+  },
   plugins: [localApi()],
   build: {
     outDir: 'dist/client',

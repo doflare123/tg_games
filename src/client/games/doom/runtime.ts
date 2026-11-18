@@ -1,139 +1,207 @@
-import { object } from '../../../shared/errors.ts';
-import { DOOM_KEYS, type DoomEvent, type DoomSave } from './protocol.ts';
+import {
+  DOOM_ASSET_PATH,
+  DOOM_MAX_TICKS,
+  DOOM_SKILLS,
+  DOOM_WAD_SHA256,
+  type DoomCommandSpan,
+  doomCommands,
+} from '../../../shared/doom.ts';
+import type { DoomEngine } from '../../../shared/doom-engine.ts';
+import { object, oneOf } from '../../../shared/errors.ts';
+import { DOOM_KEYS, type DoomEvent } from './protocol.ts';
 
-interface DoomModule {
-  FS: {
-    writeFile(path: string, bytes: Uint8Array): void;
-    readFile(path: string): Uint8Array;
-    readdir(path: string): string[];
-    mkdir(path: string): void;
-  };
-  callMain(args: string[]): void;
-  _emscripten_pause_main_loop(): void;
-  _emscripten_resume_main_loop(): void;
-}
 interface ModuleOptions {
   canvas: HTMLCanvasElement;
   noInitialRun: boolean;
   locateFile: (name: string) => string;
-  preRun: Array<(module: DoomModule) => void>;
   print: (message: string) => void;
   printErr: (message: string) => void;
-  onAbort: (message: unknown) => void;
 }
-type Factory = (options: ModuleOptions) => Promise<DoomModule>;
 declare global {
   interface Window {
-    createDoomEngine?: Factory;
+    createRankedDoomEngine?: (options: ModuleOptions) => Promise<DoomEngine>;
   }
 }
-async function loadFactory(): Promise<Factory> {
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.type = 'module';
-    script.src = '/engines/doom/loader.js';
-    script.onload = () => {
-      if (window.createDoomEngine) resolve(window.createDoomEngine);
-      else reject(new Error('Engine factory missing'));
-    };
-    script.onerror = () => reject(new Error('Не удалось загрузить движок Doom'));
-    document.head.append(script);
-  });
-}
-let module: DoomModule | null = null;
-let started = false;
 const canvas = document.querySelector('canvas');
 if (!(canvas instanceof HTMLCanvasElement)) throw new Error('Doom canvas missing');
+const screen = canvas;
 const send = (event: DoomEvent) => parent.postMessage(event, location.origin);
-const save = () => {
-  if (!module) return;
-  try {
-    const saves: DoomSave[] = module.FS.readdir('/saves')
-      .filter((name) => /^[a-zA-Z0-9_.-]+\.dsg$/.test(name))
-      .slice(0, 20)
-      .map((name) => ({
-        name,
-        bytes: module?.FS.readFile(`/saves/${name}`).slice() ?? new Uint8Array(),
-      }));
-    if (saves.length) send({ type: 'doom:saves', saves });
-  } catch {
-    /* no save files yet */
+let engine: DoomEngine | null = null;
+let started = false,
+  paused = true,
+  previous = 0,
+  accumulator = 0,
+  fromTick = 0;
+let pending: DoomCommandSpan[] = [];
+const keys = new Set<number>();
+function flush() {
+  if (!engine || pending.length === 0) return;
+  send({
+    type: 'doom:commands',
+    fromTick,
+    commands: pending,
+    map: engine._arcade_get(2),
+    activeTicks: engine._arcade_get(1),
+    finished: engine._arcade_get(4) === 1 || engine._arcade_get(0) >= DOOM_MAX_TICKS,
+  });
+  pending = [];
+  fromTick = engine._arcade_get(0);
+}
+function pause() {
+  paused = true;
+  keys.clear();
+  flush();
+  if (engine) send({ type: 'doom:paused', tick: engine._arcade_get(0) });
+}
+function key(code: number, pressed: boolean) {
+  if (code === 27 && pressed) {
+    pause();
+    send({ type: 'doom:pause-request' });
+    return;
   }
-};
+  if (pressed) keys.add(code);
+  else keys.delete(code);
+}
+function mask() {
+  const mapping = [
+    [38, 1],
+    [40, 2],
+    [37, 4],
+    [39, 8],
+    [188, 16],
+    [190, 32],
+    [16, 64],
+    [17, 128],
+    [32, 256],
+    [13, 128],
+  ] as const;
+  let value = 0;
+  for (const [code, bit] of mapping) if (keys.has(code)) value |= bit;
+  for (let weapon = 1; weapon <= 7; weapon++)
+    if (keys.has(48 + weapon)) {
+      value |= weapon << 9;
+      break;
+    }
+  return value;
+}
+function frame(now: number) {
+  requestAnimationFrame(frame);
+  if (!engine || paused) {
+    previous = now;
+    return;
+  }
+  const elapsed = now - previous;
+  previous = now;
+  if (elapsed > 1000) {
+    pause();
+    send({ type: 'doom:pause-request' });
+    return;
+  }
+  accumulator += elapsed;
+  while (accumulator >= 1000 / 35 && !paused) {
+    accumulator -= 1000 / 35;
+    const value = mask();
+    engine._arcade_step(value);
+    const tail = pending.at(-1);
+    if (tail?.mask === value) tail.ticks++;
+    else pending.push({ mask: value, ticks: 1 });
+    if (engine._arcade_get(0) - fromTick >= 35 || engine._arcade_get(4)) flush();
+    if (engine._arcade_get(4) || engine._arcade_get(0) >= DOOM_MAX_TICKS) {
+      flush();
+      paused = true;
+    }
+  }
+  engine._arcade_draw();
+}
+async function start(data: Record<string, unknown>) {
+  const skill = oneOf(data.skill, DOOM_SKILLS),
+    commands = doomCommands(data.commands, DOOM_MAX_TICKS);
+  started = true;
+  const response = await fetch(DOOM_ASSET_PATH);
+  if (!response.ok) throw new Error('Данные Freedoom ещё не установлены на сервере.');
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
+  if (digest !== DOOM_WAD_SHA256)
+    throw new Error('Версия Freedoom не совпадает с правилами рейтинга.');
+  await new Promise<void>((resolve, reject) => {
+    const script = document.createElement('script');
+    script.type = 'module';
+    script.src = '/engines/doom/ranked-loader.js';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Движок Freedoom недоступен.'));
+    document.head.append(script);
+  });
+  if (!window.createRankedDoomEngine) throw new Error('Движок Freedoom не установлен.');
+  engine = await window.createRankedDoomEngine({
+    canvas: screen,
+    noInitialRun: true,
+    locateFile: (name) => `/engines/doom/${name}`,
+    print: () => {},
+    printErr: () => {},
+  });
+  engine.FS.writeFile('/doom.wad', bytes);
+  engine.callMain(['-iwad', '/doom.wad', '-warp', '1', '1', '-skill', skill]);
+  let restored = 0;
+  for (const span of commands)
+    for (let i = 0; i < span.ticks; i++) {
+      engine._arcade_step(span.mask);
+      if (++restored % 350 === 0)
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+  fromTick = engine._arcade_get(0);
+  // First GPU upload can be slow; finish it before starting the ranked clock.
+  engine._arcade_draw();
+  previous = performance.now();
+  accumulator = 0;
+  paused = false;
+  send({ type: 'doom:running', tick: fromTick });
+  screen.focus();
+}
 window.addEventListener('message', (event) => {
+  if (event.origin !== location.origin || event.source !== parent) return;
   void (async () => {
-    if (event.origin !== location.origin || event.source !== parent) return;
     try {
       const data = object(event.data);
-      if (data.type === 'doom:start' && !started) {
-        if (!(data.bytes instanceof ArrayBuffer) || data.bytes.byteLength > 128 * 1024 * 1024)
-          throw new Error('Некорректный WAD');
-        started = true;
-        const bytes = new Uint8Array(data.bytes);
-        const factory = await loadFactory();
-        // The engine is a pinned, locally built Emscripten module, never user code.
-        module = await factory({
-          canvas,
-          noInitialRun: true,
-          locateFile: (name) => `/engines/doom/${name}`,
-          preRun: [
-            (runtime) => {
-              runtime.FS.writeFile('/doom.wad', bytes);
-              runtime.FS.mkdir('/saves');
-              if (Array.isArray(data.saves))
-                for (const item of data.saves) {
-                  const s = object(item);
-                  if (
-                    typeof s.name === 'string' &&
-                    /^[a-zA-Z0-9_.-]+\.dsg$/.test(s.name) &&
-                    s.bytes instanceof Uint8Array
-                  )
-                    runtime.FS.writeFile(`/saves/${s.name}`, s.bytes);
-                }
-            },
-          ],
-          print: () => {},
-          printErr: (message) => console.warn('doom', message),
-          onAbort: () => send({ type: 'doom:error', message: 'Игровой движок остановился' }),
-        });
-        try {
-          module.callMain([
-            '-iwad',
-            '/doom.wad',
-            '-savedir',
-            '/saves',
-            '-config',
-            '/saves/default.cfg',
-          ]);
-        } catch (error) {
-          if (error !== 'unwind') throw error;
-        }
-        send({ type: 'doom:running' });
-      } else if (
+      if (data.type === 'doom:start' && !started) await start(data);
+      else if (
         data.type === 'doom:key' &&
         typeof data.keyCode === 'number' &&
-        DOOM_KEYS.some((key) => key === data.keyCode) &&
+        DOOM_KEYS.some((code) => code === data.keyCode) &&
         typeof data.pressed === 'boolean'
-      ) {
-        document.dispatchEvent(
-          new KeyboardEvent(data.pressed ? 'keydown' : 'keyup', {
-            keyCode: data.keyCode,
-            which: data.keyCode,
-            bubbles: true,
-          }),
-        );
-      } else if (data.type === 'doom:pause') {
-        save();
-        module?._emscripten_pause_main_loop();
-      } else if (data.type === 'doom:resume') module?._emscripten_resume_main_loop();
+      )
+        key(data.keyCode, data.pressed);
+      else if (data.type === 'doom:pause') pause();
+      else if (data.type === 'doom:resume' && engine && !engine._arcade_get(4)) {
+        previous = performance.now();
+        accumulator = 0;
+        paused = false;
+        screen.focus();
+      }
     } catch (error) {
+      pause();
       send({
         type: 'doom:error',
-        message: error instanceof Error ? error.message : 'Не удалось запустить Doom',
+        message: error instanceof Error ? error.message : 'Не удалось запустить Freedoom',
       });
     }
   })();
 });
-window.setInterval(save, 3000);
-window.addEventListener('pagehide', save);
+for (const name of ['keydown', 'keyup'] as const)
+  document.addEventListener(name, (event) => {
+    if (DOOM_KEYS.some((code) => code === event.keyCode)) {
+      event.preventDefault();
+      if (!event.repeat) key(event.keyCode, name === 'keydown');
+    }
+  });
+window.addEventListener('blur', () => keys.clear());
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    pause();
+    send({ type: 'doom:pause-request' });
+  }
+});
+window.addEventListener('pagehide', flush);
+requestAnimationFrame(frame);
 send({ type: 'doom:ready' });

@@ -5,6 +5,8 @@ import { MODES } from '../../games/tetris/types.ts';
 import type { Player } from '../../shared/contracts.ts';
 import { DOODLE_RULESETS } from '../../shared/doodle.ts';
 import { isDoodleRankedEnabled } from '../../shared/doodle-policy.ts';
+import { doomBoardMode } from '../../shared/doom.ts';
+import { isDoomAdminOnly } from '../../shared/doom-policy.ts';
 import { AppError, object, oneOf } from '../../shared/errors.ts';
 import type { GroupRecord } from '../../shared/groups.ts';
 import { launchUrl } from '../../shared/launch.ts';
@@ -15,6 +17,8 @@ import type { BlockRepository, StoredBlock } from './block-blast.ts';
 import { blockBlastRecordNotification } from './block-blast-record-notification.ts';
 import type { DoodleRepository, StoredDoodle } from './doodle.ts';
 import { doodleRecordNotification } from './doodle-record-notification.ts';
+import type { DoomRepository, DoomResult } from './doom.ts';
+import { doomRecordNotification } from './doom-record-notification.ts';
 import type { FlappyRepository, StoredFlappy } from './flappy.ts';
 import { flappyRecordNotification } from './flappy-record-notification.ts';
 import type { GroupService } from './groups.ts';
@@ -41,6 +45,7 @@ export class MaintenanceService {
     private readonly blockBlast?: BlockRepository,
     private readonly doodle?: DoodleRepository,
     private readonly pets?: PetRepository,
+    private readonly doom?: DoomRepository,
   ) {}
   async petResult(event: StoredPet): Promise<void> {
     // Drain legacy events without generating pet notifications.
@@ -413,9 +418,81 @@ export class MaintenanceService {
     }
     await this.blockBlast.processed(run.id);
   }
+  async doomResult(result: DoomResult): Promise<void> {
+    if (!this.doom || result.socialProcessed) return;
+    // Closed testing must not advertise an inaccessible game to real groups.
+    if (isDoomAdminOnly()) {
+      await this.doom.processed(result.id);
+      return;
+    }
+    const player = { id: result.playerId, name: result.playerName };
+    for (const group of await this.targetGroups(player, result.verifiedAt)) {
+      try {
+        await this.groups.access(player, group.id);
+      } catch (error) {
+        if (
+          error instanceof AppError &&
+          (error.code === 'UNAUTHORIZED' || error.code === 'NOT_FOUND')
+        )
+          continue;
+        throw error;
+      }
+      const sync = await this.groups.synchronize(group.id);
+      if (sync.state !== 'complete') throw new AppError('UNAVAILABLE', 'Обновляется состав группы');
+      const scope = { groupId: group.id, membershipCheckedSince: sync.checkedSince };
+      const before = await this.doom.leaderboard(
+        player,
+        result.skill,
+        result.target,
+        result.category,
+        'all',
+        0,
+        { ...scope, maxResultOrder: result.verifiedOrder - 1 },
+      );
+      const after = await this.doom.leaderboard(
+        player,
+        result.skill,
+        result.target,
+        result.category,
+        'all',
+        0,
+        { ...scope, maxResultOrder: result.verifiedOrder },
+      );
+      const message = doomRecordNotification(result, before, after);
+      if (message)
+        await this.repository.enqueue({
+          id: `doom:${result.id}:${group.id}`,
+          payload: {
+            type: 'record',
+            game: 'doom',
+            chatId: group.id,
+            playerId: result.playerId,
+            mode: `${result.skill}:${result.target}:${result.category}`,
+            runId: result.id,
+            rank: after.me?.rank ?? 1,
+            text: message,
+          },
+          dueAt: this.now(),
+          expiresAt: result.verifiedAt + 86400000,
+          attempts: 0,
+        });
+    }
+    await this.doom.processed(result.id);
+  }
   async sweep(limit = 12): Promise<{ processed: number; deferred: number }> {
     await this.repository.recover2048Expired(this.now());
     let deferred = 0;
+    for (const result of (await this.doom?.pendingResults(6)) ?? []) {
+      try {
+        await this.doomResult(result);
+      } catch (error) {
+        deferred++;
+        console.warn(
+          'doom_record_generation_deferred',
+          error instanceof Error ? error.message : 'unknown',
+        );
+      }
+    }
     for (const event of (await this.pets?.pendingResults(3)) ?? []) {
       try {
         await this.petResult(event);
@@ -514,6 +591,10 @@ export class MaintenanceService {
     return { processed, deferred };
   }
   private async execute(job: SocialJob): Promise<void> {
+    if (job.payload.game === 'doom' && isDoomAdminOnly()) {
+      await this.repository.complete(job, 'suppressed', 'Freedoom owner-only test');
+      return;
+    }
     if (job.payload.game === 'tamagotchi') {
       await this.repository.complete(job, 'suppressed', 'Pet notifications disabled');
       return;
@@ -540,6 +621,8 @@ export class MaintenanceService {
         throw new AppError('UNAVAILABLE', 'Обновляется состав группы; отправка отложена');
       const player = { id: payload.playerId, name: 'Игрок' };
       const scope = { groupId: payload.chatId, membershipCheckedSince: sync.checkedSince };
+      if (payload.game === 'doom' && !this.doom)
+        throw new AppError('UNAVAILABLE', 'Рейтинг Doom недоступен');
       if (payload.game === 'minesweeper' && !this.mines)
         throw new AppError('UNAVAILABLE', 'Рейтинг Сапёра недоступен');
       if (payload.game === '2048' && !this.puzzle2048)
@@ -553,49 +636,62 @@ export class MaintenanceService {
       if (payload.game === 'block-blast' && !this.blockBlast)
         throw new AppError('UNAVAILABLE', 'Рейтинг Block Blast недоступен');
       const board =
-        payload.game === 'doodle' && this.doodle
-          ? await this.doodle.leaderboard(player, 'all', 0, {
-              ...scope,
-              ruleset:
-                payload.mode === 'classic'
-                  ? LEGACY_DOODLE_RULESET
-                  : oneOf(payload.mode, DOODLE_RULESETS),
-            })
-          : payload.game === 'block-blast' && this.blockBlast
-            ? await this.blockBlast.leaderboard(player, 'all', 0, scope)
-            : payload.game === 'flappy' && this.flappy
-              ? await this.flappy.leaderboard(player, 'all', 0, scope)
-              : payload.game === 'snake' && this.snake
-                ? await this.snake.leaderboard(
-                    player,
-                    snakeSize(Number(payload.mode)),
-                    'all',
-                    0,
-                    scope,
-                  )
-                : payload.game === '2048' && this.puzzle2048
-                  ? await this.puzzle2048.leaderboard(player, 'all', 0, {
-                      ...scope,
-                      ruleset:
-                        payload.mode === 'classic'
-                          ? LEGACY_2048_RULESET
-                          : oneOf(payload.mode, RULESETS_2048),
-                    })
-                  : payload.game === 'minesweeper' && this.mines
-                    ? await this.mines.leaderboard(
-                        player,
-                        oneOf(payload.mode, SIZES),
-                        'all',
-                        0,
-                        scope,
-                      )
-                    : await this.arcade.leaderboard(
-                        { id: payload.playerId, name: 'Игрок' },
-                        oneOf(payload.mode, MODES),
-                        'all',
-                        0,
-                        scope,
-                      );
+        payload.game === 'doom' && this.doom
+          ? await (() => {
+              const mode = doomBoardMode(payload.mode);
+              return this.doom.leaderboard(
+                player,
+                mode.skill,
+                mode.target,
+                mode.category,
+                'all',
+                0,
+                scope,
+              );
+            })()
+          : payload.game === 'doodle' && this.doodle
+            ? await this.doodle.leaderboard(player, 'all', 0, {
+                ...scope,
+                ruleset:
+                  payload.mode === 'classic'
+                    ? LEGACY_DOODLE_RULESET
+                    : oneOf(payload.mode, DOODLE_RULESETS),
+              })
+            : payload.game === 'block-blast' && this.blockBlast
+              ? await this.blockBlast.leaderboard(player, 'all', 0, scope)
+              : payload.game === 'flappy' && this.flappy
+                ? await this.flappy.leaderboard(player, 'all', 0, scope)
+                : payload.game === 'snake' && this.snake
+                  ? await this.snake.leaderboard(
+                      player,
+                      snakeSize(Number(payload.mode)),
+                      'all',
+                      0,
+                      scope,
+                    )
+                  : payload.game === '2048' && this.puzzle2048
+                    ? await this.puzzle2048.leaderboard(player, 'all', 0, {
+                        ...scope,
+                        ruleset:
+                          payload.mode === 'classic'
+                            ? LEGACY_2048_RULESET
+                            : oneOf(payload.mode, RULESETS_2048),
+                      })
+                    : payload.game === 'minesweeper' && this.mines
+                      ? await this.mines.leaderboard(
+                          player,
+                          oneOf(payload.mode, SIZES),
+                          'all',
+                          0,
+                          scope,
+                        )
+                      : await this.arcade.leaderboard(
+                          { id: payload.playerId, name: 'Игрок' },
+                          oneOf(payload.mode, MODES),
+                          'all',
+                          0,
+                          scope,
+                        );
       if (!board.me || board.me.rank !== payload.rank || board.me.runId !== payload.runId) {
         await this.repository.complete(job, 'suppressed', 'Superseded record');
         return;
@@ -606,7 +702,8 @@ export class MaintenanceService {
           payload.game === 'snake' ||
           payload.game === 'flappy' ||
           payload.game === 'doodle' ||
-          payload.game === 'block-blast'
+          payload.game === 'block-blast' ||
+          payload.game === 'doom'
         ) {
           const updated = await this.repository.group(payload.chatId);
           await this.repository.retry(
@@ -631,19 +728,21 @@ export class MaintenanceService {
                 text: '🎮 Побить рекорд',
                 url: launchUrl(
                   me.username,
-                  payload.game === 'doodle'
-                    ? 'game_doodle'
-                    : payload.game === 'block-blast'
-                      ? 'game_block-blast'
-                      : payload.game === 'flappy'
-                        ? 'game_flappy'
-                        : payload.game === 'snake'
-                          ? `game_snake_${payload.mode}`
-                          : payload.game === '2048'
-                            ? 'game_2048'
-                            : payload.game === 'minesweeper'
-                              ? `game_minesweeper_${payload.mode}`
-                              : `game_tetris_${payload.mode}`,
+                  payload.game === 'doom'
+                    ? 'game_doom'
+                    : payload.game === 'doodle'
+                      ? 'game_doodle'
+                      : payload.game === 'block-blast'
+                        ? 'game_block-blast'
+                        : payload.game === 'flappy'
+                          ? 'game_flappy'
+                          : payload.game === 'snake'
+                            ? `game_snake_${payload.mode}`
+                            : payload.game === '2048'
+                              ? 'game_2048'
+                              : payload.game === 'minesweeper'
+                                ? `game_minesweeper_${payload.mode}`
+                                : `game_tetris_${payload.mode}`,
                   me.hasMainMiniApp ? 'startapp' : 'start',
                 ),
               },

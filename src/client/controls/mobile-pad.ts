@@ -138,7 +138,7 @@ export function mountDoomPad(
       { label: 'USE', className: 'use-button', keys: [32] },
     ],
     [
-      { label: 'МЕНЮ', keys: [27] },
+      { label: 'ПАУЗА', keys: [27] },
       { label: 'ENTER', keys: [13] },
       {
         label: 'ОРУЖИЕ',
@@ -147,9 +147,6 @@ export function mountDoomPad(
           return [48 + weapon];
         },
       },
-      { label: 'КАРТА', keys: [9] },
-      { label: 'SAVE', keys: [113] },
-      { label: 'LOAD', keys: [114] },
     ],
   );
 }

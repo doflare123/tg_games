@@ -271,7 +271,7 @@
   gap: 7px;
 }
 .doom-screen:empty::after {
-  content: "INSERT WAD";
+  content: "FREEDOOM";
   font: 22px monospace;
   color: #a78159;
   letter-spacing: 4px;

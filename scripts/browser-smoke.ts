@@ -7,6 +7,7 @@ import { createMines } from '../src/games/minesweeper/engine.ts';
 import { createTetris } from '../src/games/tetris/engine.ts';
 import type { TetrisState } from '../src/games/tetris/types.ts';
 import { CATALOG } from '../src/shared/contracts.ts';
+import { canAccessDoom } from '../src/shared/doom-policy.ts';
 
 process.env.PLAYWRIGHT_BROWSERS_PATH = resolve('.cache/playwright');
 const { chromium } = await import('@playwright/test');
@@ -77,18 +78,14 @@ try {
       throw error;
     });
   await page.getByRole('heading', { name: 'ВЫБИРАЙ СВОЮ ИГРУ' }).waitFor();
-  assert.deepEqual(await page.locator('.card-info h3').allTextContents(), [
-    'Тетрис',
-    'Сапёр',
-    '2048',
-    'Змейка',
-    'Block Blast',
-    'Flappy Bird',
-  ]);
-  assert.doesNotMatch((await page.locator('body').textContent()) ?? '', /doom|mario|дум|марио/i);
+  assert.deepEqual(
+    await page.locator('.card-info h3').allTextContents(),
+    CATALOG.filter((game) => game.id !== 'doom' || canAccessDoom(false)).map((game) => game.title),
+  );
+  assert.doesNotMatch((await page.locator('body').textContent()) ?? '', /mario|марио/i);
   assert.doesNotMatch(
     (await page.locator('meta[name=description]').getAttribute('content')) ?? '',
-    /doom|mario|дум|марио/i,
+    /mario|марио/i,
   );
   await page.screenshot({ path: '.cache/screenshots/desktop.png', fullPage: true });
   await page.getByRole('button', { name: 'Играть: 2048', exact: true }).click();
@@ -569,14 +566,14 @@ try {
   let hasWad = false;
   try {
     await access(wad);
-    await access('public/engines/doom/manifest.json');
-    hasWad = CATALOG.some((game) => game.available && game.id === 'doom');
+    await access('public/engines/doom/ranked-manifest.json');
+    hasWad = canAccessDoom(false) && CATALOG.some((game) => game.available && game.id === 'doom');
   } catch {}
   if (hasWad) {
-    await page.getByRole('button', { name: 'Играть: DOOM', exact: true }).click();
-    await page.getByLabel('Загрузить WAD Doom').setInputFiles(wad);
+    await page.getByRole('button', { name: 'Играть: Freedoom', exact: true }).click();
+    await page.getByRole('button', { name: 'Новый забег', exact: true }).click();
     await page
-      .getByText(/Движок запущен/)
+      .getByText(/Игра идёт|Свободная игра/)
       .waitFor({ timeout: 30000 })
       .catch(async (error: unknown) => {
         console.error(await page.locator('.game-status').allTextContents(), errors);
@@ -674,11 +671,11 @@ try {
     false,
   );
   await phone.screenshot({ path: '.cache/screenshots/2048-mobile.png', fullPage: true });
-  for (const hidden of ['game_doom', 'game_mario']) {
+  for (const hidden of ['game_mario']) {
     await phone.goto(`http://127.0.0.1:4173/?startapp=${hidden}`);
     await phone.getByRole('heading', { name: 'ВЫБИРАЙ СВОЮ ИГРУ' }).waitFor();
     assert.equal(await phone.getByRole('dialog').count(), 0);
-    assert.doesNotMatch((await phone.locator('body').textContent()) ?? '', /doom|mario|дум|марио/i);
+    assert.doesNotMatch((await phone.locator('body').textContent()) ?? '', /mario|марио/i);
   }
   await phone.goto('http://127.0.0.1:4173/?startapp=game_tetris_sprint');
   await phone.getByRole('region', { name: 'Тетрис', exact: true }).waitFor();
@@ -906,9 +903,9 @@ try {
   }
   if (hasWad) {
     await phone.goto('http://127.0.0.1:4173/?startapp=game_doom');
-    await phone.getByRole('region', { name: 'DOOM', exact: true }).waitFor();
-    await phone.getByLabel('Загрузить WAD Doom').setInputFiles(wad);
-    await phone.getByText(/Движок запущен/).waitFor({ timeout: 30000 });
+    await phone.getByRole('region', { name: 'Freedoom', exact: true }).waitFor();
+    await phone.getByRole('button', { name: 'Новый забег', exact: true }).click();
+    await phone.getByText(/Игра идёт|Свободная игра/).waitFor({ timeout: 30000 });
     const doomFrame = phone.frameLocator('.doom-frame');
     await doomFrame.locator('canvas').evaluate(() => {
       const events: Array<{ key: number; pressed: boolean }> = [];

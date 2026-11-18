@@ -12,6 +12,7 @@ import './styles.css';
 import type { TetrisMode } from '../games/tetris/types.ts';
 import type { GameInfo } from '../shared/contracts.ts';
 import { CATALOG } from '../shared/contracts.ts';
+import { canAccessDoom } from '../shared/doom-policy.ts';
 import type { GameAdapter } from './games/adapter.ts';
 import { api, hasApi } from './platform/api.ts';
 import { initializeTelegram, inTelegram, telegram } from './platform/telegram.ts';
@@ -72,20 +73,26 @@ let disposeBoard: (() => void) | null = null;
 let disposeGame: (() => void) | null = null;
 let currentView: LaunchTarget = { view: 'catalog' };
 const navigationSession = crypto.randomUUID();
+let owner = false;
+const visibleCatalog = () => CATALOG.filter((game) => game.id !== 'doom' || canAccessDoom(owner));
 brand.addEventListener('click', (event) => {
   event.preventDefault();
   showCatalog();
 });
-if (hasApi)
-  void api
-    .profile()
-    .then((player) => {
-      identity.textContent = `● ${player.name}`;
-      if (player.isAdmin) navigation.append(adminTab);
-    })
-    .catch(() => {
-      identity.textContent = '● ГОСТЬ';
-    });
+const profileReady = hasApi
+  ? api
+      .profile()
+      .then((player) => {
+        identity.textContent = `● ${player.name}`;
+        owner = player.isAdmin;
+        if (player.isAdmin) navigation.append(adminTab);
+        if (currentView.view === 'catalog') renderPage(currentView, true);
+      })
+      .catch((error: unknown) => {
+        identity.textContent = '● ПРОФИЛЬ НЕДОСТУПЕН';
+        identity.title = errorMessage(error);
+      })
+  : Promise.resolve();
 function tabs(board: boolean): void {
   petTab.classList.remove('active');
   adminTab.classList.remove('active');
@@ -236,8 +243,8 @@ function preview(game: GameInfo): HTMLElement {
     corridor.append(element('div', 'doom-door'), element('div', 'doom-light'));
     visual.append(
       corridor,
-      element('span', 'doom-word', 'DOOM'),
-      element('span', 'preview-watermark', 'KNEE-DEEP'),
+      element('span', 'doom-word', 'FREEDOOM'),
+      element('span', 'preview-watermark', 'PHASE 1'),
     );
   }
   return visual;
@@ -263,7 +270,9 @@ function renderCatalog(): void {
     element(
       'p',
       'hero-description',
-      'Тетрис, Сапёр, 2048, Змейка, Block Blast, Flappy Bird и Doodle Jump.\nВыбирай игру и вырасти свой рекорд.',
+      `${visibleCatalog()
+        .map((game) => game.title)
+        .join(', ')}.\nВыбирай игру и вырасти свой рекорд.`,
     ),
   );
   const actions = element('div', 'hero-actions');
@@ -297,10 +306,14 @@ function renderCatalog(): void {
   const sectionHead = element('div', 'section-heading');
   sectionHead.append(
     element('h2', '', 'ВЫБИРАЙ СВОЮ ИГРУ'),
-    element('span', 'eyebrow', `${String(CATALOG.length).padStart(2, '0')} GAMES / ∞ ATTEMPTS`),
+    element(
+      'span',
+      'eyebrow',
+      `${String(visibleCatalog().length).padStart(2, '0')} GAMES / ∞ ATTEMPTS`,
+    ),
   );
   const grid = element('div', 'games-grid');
-  CATALOG.forEach((game, index) => {
+  visibleCatalog().forEach((game, index) => {
     const card = element('article', 'game-card');
     const cardTop = element('div', 'card-top');
     cardTop.append(
@@ -568,4 +581,6 @@ const launch = location.hash
   : parseLaunch(
       telegram?.initDataUnsafe.start_param ?? new URLSearchParams(location.search).get('startapp'),
     );
-navigate(launch, true);
+if (launch.view === 'game' && launch.game === 'doom')
+  void profileReady.then(() => navigate(launch, true));
+else navigate(launch, true);

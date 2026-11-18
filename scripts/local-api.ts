@@ -1,7 +1,10 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { pathToFileURL } from 'node:url';
 import { LEGACY_2048_RULESET } from '../src/games/2048/engine.ts';
 import { Service2048 } from '../src/server/domain/2048.ts';
 import { isAdmin } from '../src/server/domain/admin.ts';
@@ -9,6 +12,7 @@ import { ArcadeService } from '../src/server/domain/arcade.ts';
 import { BlockService } from '../src/server/domain/block-blast.ts';
 import { CommunicationsService } from '../src/server/domain/communications.ts';
 import { DoodleService } from '../src/server/domain/doodle.ts';
+import { DoomService } from '../src/server/domain/doom.ts';
 import { FlappyService } from '../src/server/domain/flappy.ts';
 import { GroupService } from '../src/server/domain/groups.ts';
 import { MaintenanceService } from '../src/server/domain/maintenance.ts';
@@ -35,6 +39,8 @@ import {
   DOODLE_SOCIAL_COLUMNS,
   DOODLE_SOCIAL_INDEXES,
 } from '../src/server/platform/doodle-ddl.ts';
+import { DOOM_DDL } from '../src/server/platform/doom-ddl.ts';
+import { WasmDoomVerifier } from '../src/server/platform/doom-verifier.ts';
 import {
   FLAPPY_DDL,
   FLAPPY_SOCIAL_COLUMNS,
@@ -57,6 +63,7 @@ import { SqlAdminRepository } from '../src/server/platform/sql-admin.ts';
 import { SqlBlockRepository } from '../src/server/platform/sql-block-blast.ts';
 import { SqlCommunicationsRepository } from '../src/server/platform/sql-communications.ts';
 import { SqlDoodleRepository } from '../src/server/platform/sql-doodle.ts';
+import { SqlDoomRepository } from '../src/server/platform/sql-doom.ts';
 import { SqlFlappyRepository } from '../src/server/platform/sql-flappy.ts';
 import { SqlMineRepository } from '../src/server/platform/sql-minesweeper.ts';
 import { SqlArcadeRepository, type SqlDatabase } from '../src/server/platform/sql-repository.ts';
@@ -64,6 +71,9 @@ import { SqlSnakeRepository } from '../src/server/platform/sql-snake.ts';
 import { SqlSocialRepository } from '../src/server/platform/sql-social-repository.ts';
 import { SqlPetRepository } from '../src/server/platform/sql-tamagotchi.ts';
 import { TAMAGOTCHI_DDL } from '../src/server/platform/tamagotchi-ddl.ts';
+import { DOOM_WAD_SHA256 } from '../src/shared/doom.ts';
+import type { DoomHeadlessFactory } from '../src/shared/doom-engine.ts';
+import { canAccessDoom } from '../src/shared/doom-policy.ts';
 import { AppError, object } from '../src/shared/errors.ts';
 import { encodePetView } from '../src/shared/tamagotchi.ts';
 
@@ -88,6 +98,7 @@ export function localRepository(file = ':memory:') {
     if (!columns.some((column) => column.name === name))
       database.exec(`ALTER TABLE runs ADD COLUMN ${name} ${definition}`);
   database.exec(SOCIAL_DDL);
+  database.exec(DOOM_DDL);
   database.exec(TAMAGOTCHI_DDL);
   for (const sql of COMMUNICATION_SCHEMA) database.exec(sql);
   const threadColumns = database.prepare('PRAGMA table_info(support_threads)').all();
@@ -203,6 +214,25 @@ export function createLocalApi(file: string, ownerPreview = false) {
   const snakeRepository = new SqlSnakeRepository(local.db);
   const groups = new GroupService(social, telegram, () => Date.now());
   const petRepository = new SqlPetRepository(local.db);
+  const doomRepository = new SqlDoomRepository(local.db);
+  const doom = new DoomService(
+    doomRepository,
+    new WasmDoomVerifier(
+      async () => {
+        const bytes = await readFile('public/engines/doom/freedoom1.wad');
+        if (createHash('sha256').update(bytes).digest('hex') !== DOOM_WAD_SHA256)
+          throw new AppError('UNAVAILABLE', 'Версия Freedoom не совпадает');
+        return bytes;
+      },
+      async (options) => {
+        const engineUrl = pathToFileURL(resolve('public/engines/doom/verify.js')).href;
+        const factory = (await import(engineUrl)).default as DoomHeadlessFactory;
+        return factory(options);
+      },
+    ),
+    () => Date.now(),
+    groups,
+  );
   const tamagotchi = new TamagotchiService(petRepository, () => Date.now(), groups);
   const blockBlast = new BlockService(
     blockBlastRepository,
@@ -222,6 +252,7 @@ export function createLocalApi(file: string, ownerPreview = false) {
     blockBlastRepository,
     doodleRepository,
     petRepository,
+    doomRepository,
   );
   const ready = (async () => {
     await adminReady;
@@ -308,6 +339,25 @@ export function createLocalApi(file: string, ownerPreview = false) {
         const method = req.url?.split('?')[0]?.split('/').pop();
         let result: unknown;
         switch (method) {
+          case 'createDoomRun':
+            result = await doom.create(player, input);
+            break;
+          case 'getDoomProgress':
+            result = await doom.progress(player, input);
+            break;
+          case 'appendDoomCommands':
+            result = await doom.append(player, input);
+            break;
+          case 'interruptDoomRun':
+            result = await doom.interrupt(player, input);
+            break;
+          case 'verifyDoomRun':
+            result = await doom.verify(player, input);
+            await flushNotifications();
+            break;
+          case 'getDoomLeaderboard':
+            result = await doom.leaderboard(player, input);
+            break;
           case 'getPet':
             result = encodePetView(await tamagotchi.get(player));
             break;
@@ -496,7 +546,9 @@ export function createLocalApi(file: string, ownerPreview = false) {
             result = await groups.configure(player, input);
             break;
           case 'getCatalog':
-            result = service.catalog();
+            result = service
+              .catalog()
+              .filter((game) => game.id !== 'doom' || canAccessDoom(isAdmin(player)));
             break;
           case 'getProfile':
             await admin.observe(player);

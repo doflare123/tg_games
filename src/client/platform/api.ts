@@ -10,6 +10,14 @@ import {
   decodeDoodleBoard,
   decodeDoodleRun,
 } from '../../shared/doodle.ts';
+import {
+  type DoomBoardInput,
+  type DoomSkill,
+  type DoomUpload,
+  decodeDoomBoard,
+  decodeDoomProgress,
+  decodeDoomRun,
+} from '../../shared/doom.ts';
 import { AppError, integer, object, oneOf, text } from '../../shared/errors.ts';
 import { decodeFlappyBoard, decodeFlappyRun } from '../../shared/flappy.ts';
 import { decodeGroup } from '../../shared/groups.ts';
@@ -84,6 +92,27 @@ async function call<K extends EndpointName>(name: K, input: EndpointInput<K>): P
   throw new AppError('UNAUTHORIZED', 'Рейтинговая игра доступна внутри Telegram');
 }
 export const api = {
+  async createDoom(requestId: string, skill: DoomSkill) {
+    return decodeDoomRun(await call('createDoomRun', { requestId, skill }));
+  },
+  async doomProgress(runId?: string) {
+    const value = await call('getDoomProgress', runId === undefined ? {} : { runId });
+    return value === null ? null : decodeDoomProgress(value);
+  },
+  async appendDoom(input: DoomUpload) {
+    return decodeDoomRun(await call('appendDoomCommands', input));
+  },
+  async interruptDoom(runId: string, atTick?: number) {
+    return decodeDoomRun(
+      await call('interruptDoomRun', { runId, ...(atTick === undefined ? {} : { atTick }) }),
+    );
+  },
+  async verifyDoom(runId: string) {
+    return decodeDoomRun(await call('verifyDoomRun', { runId }));
+  },
+  async doomLeaderboard(input: DoomBoardInput) {
+    return decodeDoomBoard(await call('getDoomLeaderboard', input));
+  },
   async pet() {
     return decodePetView(await call('getPet', {}));
   },

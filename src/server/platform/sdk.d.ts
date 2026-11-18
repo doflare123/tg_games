@@ -2,6 +2,7 @@
 // These are not the Node SDK: runtime modules are supplied by Telegram.
 // Keep this boundary small and exercise SQL against real SQLite in tests.
 declare module 'sdk' {
+  export function fetch(url: string): Promise<{ ok: boolean; body: AsyncIterable<Uint8Array> }>;
   export const db: import('./sql-repository.ts').SqlDatabase;
   export class EndpointError extends Error {
     constructor(message: string, parameters?: Record<string, unknown>);

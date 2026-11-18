@@ -22,6 +22,8 @@
     "cloud:migrate": "tgcloud migrate",
     "deploy": "npm run check && tgcloud push",
     "build:doom": "node scripts/build-doom.ts",
+    "build:doom:ranked": "node --experimental-transform-types scripts/build-doom-ranked.ts",
+    "test:doom:browser": "node --experimental-transform-types scripts/doom-smoke.ts",
     "test:browser": "node scripts/browser-smoke.ts",
     "test:snake:browser": "node scripts/snake-smoke.ts",
     "test:doodle:browser": "node --experimental-transform-types scripts/doodle-smoke.ts && node --experimental-transform-types scripts/doodle-tilt-smoke.ts",
@@ -29,6 +31,7 @@
     "test:block-blast:browser": "node --experimental-transform-types scripts/block-blast-smoke.ts",
     "test:pet:browser": "node --experimental-transform-types scripts/tamagotchi-smoke.ts",
     "setup:doom": "node scripts/setup-doom.ts",
+    "setup:freedoom": "node --experimental-transform-types scripts/setup-freedoom.ts",
     "test:production": "npm run build && node scripts/browser-smoke.ts --production",
     "diagnose:bot": "npm run build && node scripts/diagnose-bot.ts",
     "configure:bot": "npm run build && node scripts/configure-bot.ts"
@@ -44,6 +47,8 @@
     "vitest": "^4.1.12"
   },
   "dependencies": {
+    "@noble/hashes": "^2.4.0",
+    "fflate": "^0.8.3",
     "jsnes": "^2.1.0",
     "nipplejs": "^1.0.4"
   }

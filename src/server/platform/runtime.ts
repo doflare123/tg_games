@@ -20,6 +20,7 @@ import { SqlAdminRepository } from './sql-admin.ts';
 import { SqlBlockRepository } from './sql-block-blast.ts';
 import { SqlCommunicationsRepository } from './sql-communications.ts';
 import { SqlDoodleRepository } from './sql-doodle.ts';
+import { SqlDoomRepository } from './sql-doom.ts';
 import { SqlFlappyRepository } from './sql-flappy.ts';
 import { SqlMineRepository } from './sql-minesweeper.ts';
 import { SqlArcadeRepository } from './sql-repository.ts';
@@ -37,6 +38,7 @@ export const communications = new CommunicationsService(
   () => Date.now(),
 );
 export const groups = new GroupService(socialRepository, telegramGateway, () => Date.now());
+export const doomRepository = new SqlDoomRepository(db);
 export const petRepository = new SqlPetRepository(db);
 export const tamagotchi = new TamagotchiService(petRepository, () => Date.now(), groups);
 export const flappyRepository = new SqlFlappyRepository(db);
@@ -96,6 +98,7 @@ export const maintenance = new MaintenanceService(
   blockBlastRepository,
   doodleRepository,
   petRepository,
+  doomRepository,
 );
 export async function flushNotifications(): Promise<void> {
   try {

@@ -24,6 +24,7 @@
     "build:doom": "node scripts/build-doom.ts",
     "build:doom:ranked": "node --experimental-transform-types scripts/build-doom-ranked.ts",
     "test:doom:browser": "node --experimental-transform-types scripts/doom-smoke.ts",
+    "test:doom:live": "node --experimental-transform-types scripts/doom-live-smoke.ts",
     "test:browser": "node scripts/browser-smoke.ts",
     "test:snake:browser": "node scripts/snake-smoke.ts",
     "test:doodle:browser": "node --experimental-transform-types scripts/doodle-smoke.ts && node --experimental-transform-types scripts/doodle-tilt-smoke.ts",

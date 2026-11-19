@@ -6,8 +6,10 @@ import {
   type DoomCommandSpan,
   doomCommands,
 } from '../../../shared/doom.ts';
+import { DOOM_WAD_BYTES } from '../../../shared/doom-content.ts';
 import type { DoomEngine } from '../../../shared/doom-engine.ts';
 import { object, oneOf } from '../../../shared/errors.ts';
+import { downloadRangedAsset } from '../../platform/ranged-download.ts';
 import { DOOM_KEYS, type DoomEvent } from './protocol.ts';
 
 interface ModuleOptions {
@@ -117,9 +119,9 @@ async function start(data: Record<string, unknown>) {
   const skill = oneOf(data.skill, DOOM_SKILLS),
     commands = doomCommands(data.commands, DOOM_MAX_TICKS);
   started = true;
-  const response = await fetch(DOOM_ASSET_PATH);
-  if (!response.ok) throw new Error('Данные Freedoom ещё не установлены на сервере.');
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  const bytes = await downloadRangedAsset(DOOM_ASSET_PATH, DOOM_WAD_BYTES, fetch, (loaded, total) =>
+    send({ type: 'doom:loading', loaded, total }),
+  );
   const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (byte) =>
     byte.toString(16).padStart(2, '0'),
   ).join('');
@@ -151,12 +153,20 @@ async function start(data: Record<string, unknown>) {
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     }
   fromTick = engine._arcade_get(0);
-  // First GPU upload can be slow; finish it before starting the ranked clock.
+  // Load the first level with a recorded neutral command before warming up
+  // graphics. The verifier replays this same command; no game state is skipped.
+  if (fromTick === 0) {
+    engine._arcade_step(0);
+    pending = [{ mask: 0, ticks: 1 }];
+  }
   engine._arcade_draw();
+  // Let initial texture uploads settle before measuring frame gaps for pauses.
+  for (let frame = 0; frame < 2; frame++)
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   previous = performance.now();
   accumulator = 0;
   paused = false;
-  send({ type: 'doom:running', tick: fromTick });
+  send({ type: 'doom:running', tick: engine._arcade_get(0) });
   screen.focus();
 }
 window.addEventListener('message', (event) => {

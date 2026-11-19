@@ -53,15 +53,12 @@ export class GameBotService {
     if (this.telegram.privateCommands) {
       const commands = [
         { command: 'games', description: 'Открыть игры' },
+        { command: 'game_doom', description: 'Играть в Freedoom' },
         { command: 'feedback', description: 'Предложить улучшение или написать владельцу' },
       ];
       await this.telegram.privateCommands(commands);
       await this.telegram.commands(
-        [
-          ...commands,
-          { command: 'admin', description: 'Обращения и рассылки' },
-          { command: 'game_doom', description: 'Freedoom (закрытый тест)' },
-        ],
+        [...commands, { command: 'admin', description: 'Обращения и рассылки' }],
         OWNER_ID,
       );
     }

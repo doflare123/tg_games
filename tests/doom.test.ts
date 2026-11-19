@@ -55,7 +55,8 @@ const create = (s: ReturnType<typeof setup>, requestId = 'doom_request_0001', sk
 
 describe('Doom server recording and rankings', () => {
   afterEach(() => vi.restoreAllMocks());
-  it('rejects every player API for non-owners before reading input or touching recordings', async () => {
+  it('can close player APIs before reading input or touching recordings', async () => {
+    vi.spyOn(doomPolicy, 'canAccessDoom').mockImplementation((admin) => admin);
     const s = setup();
     for (const operation of [
       'create',
@@ -70,6 +71,38 @@ describe('Doom server recording and rankings', () => {
       ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     expect((await create(s)).id).toContain(`${OWNER_ID}:`);
     expect(doomPolicy.canAccessDoom(false)).toBe(false);
+    s.close();
+  });
+  it('lets a regular player start, save, verify and resume without accessing another player run', async () => {
+    expect(doomPolicy.canAccessDoom(false)).toBe(true);
+    const s = setup();
+    const run = await s.service.create(other, { requestId: 'public_doom_0001', skill: '3' });
+    expect(run.id).toContain(`${other.id}:`);
+    s.advance(10000);
+    await s.service.append(other, {
+      runId: run.id,
+      revision: 0,
+      commands: [{ mask: 0, ticks: 35 }],
+    });
+    expect((await s.service.progress(other, {}))?.run.id).toBe(run.id);
+    expect((await s.service.verify(other, { runId: run.id })).verifiedTicks).toBe(35);
+    expect((await s.service.interrupt(other, { runId: run.id })).continuous).toBe(false);
+    expect(
+      (
+        await s.service.leaderboard(other, {
+          skill: '3',
+          target: 'episode',
+          category: 'any',
+          period: 'all',
+        })
+      ).entries,
+    ).toEqual([]);
+    await expect(s.service.progress(player, { runId: run.id })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+    await expect(
+      s.service.append(player, { runId: run.id, revision: 1, commands: [{ mask: 0, ticks: 1 }] }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
     s.close();
   });
   it('accepts differently chunked local caches only when the acknowledged command prefix matches', () => {
@@ -126,7 +159,6 @@ describe('Doom server recording and rankings', () => {
     s.close();
   });
   it('delivers through shared notifications with retries, deduplication, group settings and shared cooldown', async () => {
-    vi.spyOn(doomPolicy, 'isDoomAdminOnly').mockReturnValue(false);
     const s = setup(),
       arcade = new SqlArcadeRepository(s.db),
       social = new SqlSocialRepository(s.db, arcade);
@@ -232,7 +264,7 @@ describe('Doom server recording and rankings', () => {
     await expect(s.service.create(player, { requestId: 'bad', skill: '3' })).rejects.toThrow();
     await expect(
       s.service.append(other, { runId: run.id, revision: 0, commands: [{ mask: 1, ticks: 35 }] }),
-    ).rejects.toThrow('только владельцу');
+    ).rejects.toThrow('не найден');
     await expect(
       s.service.append(player, { runId: run.id, revision: 0, commands: [{ mask: 1, ticks: 350 }] }),
     ).rejects.toThrow('опережает');

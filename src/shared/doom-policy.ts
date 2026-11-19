@@ -1,6 +1,6 @@
-// Closed rollout. The server checks the verified owner identity independently.
+// Public release. Player APIs still require verified Telegram identity and run ownership.
 export function isDoomAdminOnly(): boolean {
-  return true;
+  return false;
 }
 export function canAccessDoom(isAdmin: boolean): boolean {
   return !isDoomAdminOnly() || isAdmin;

@@ -20,7 +20,6 @@ import create from '../lib/doom-engine.js';
 import {fetch as request} from 'sdk';
 import {WasmDoomVerifier} from './src/server/platform/doom-verifier.ts';
 import {serverDoomWad} from './src/server/platform/doom-assets.ts';
-import {DOOM_PRIVATE_MESSAGE} from './src/shared/doom-policy.ts';
 ${names.map((name, i) => `import op${i} from './${name}.js';`).join('\n')}
 import catalog from './getCatalog.js';
 import profile from './getProfile.js';
@@ -42,16 +41,19 @@ export default async function(input,context) {
   const owner={initData:{user:{id:930852883,first_name:'Owner'}}};
   let denied=0;
   for(const operation of [${names.map((_, i) => `op${i}`).join(',')}]) {
-    try { await operation({playerId:930852883,isAdmin:true},guest); }
-    catch(error) { if(error.message===DOOM_PRIVATE_MESSAGE) { denied++; continue; } throw error; }
-    throw new Error('Non-owner was admitted');
+    try { await operation({}, {initData:{}}); }
+    catch(error) { if(error.message==='Открой приложение через Telegram') { denied++; continue; } throw error; }
+    throw new Error('Unauthenticated player was admitted');
   }
-  if((await catalog({},guest)).some(game=>game.id==='doom')) throw new Error('Guest catalog exposed Freedoom');
+  if(!(await catalog({},guest)).some(game=>game.id==='doom')) throw new Error('Public catalog missing Freedoom');
   if(!(await catalog({},owner)).some(game=>game.id==='doom')) throw new Error('Owner catalog missing Freedoom');
   const identity=await profile({},owner);
   const normalBoard=await arcadeBoard({mode:'marathon',period:'all'},owner);
   if(identity.id!==930852883 || !identity.isAdmin || !Array.isArray(normalBoard.entries)) throw new Error('Existing arcade API regression');
   await op1({},owner);
+  await op1({},guest);
+  const publicBoard=await op5({skill:'3',target:'episode',category:'any',period:'all'},guest);
+  if(!Array.isArray(publicBoard.entries)) throw new Error('Public leaderboard unavailable');
   const board=await op5({skill:'3',target:'episode',category:'any',period:'all'},owner);
   if(!Array.isArray(board.entries)) throw new Error('Owner leaderboard unavailable');
   if(input.runtimeOnly) {
@@ -61,7 +63,7 @@ export default async function(input,context) {
   const started=Date.now();
   const result=await new WasmDoomVerifier(serverDoomWad,create).verify('3',[{mask:0,ticks:350}]);
   if(result.ticks!==350 || result.complete) throw new Error('Cloud replay mismatch');
-  return {denied,ownerCatalog:true,authoritativeReplayTicks:result.ticks,elapsedMs:Date.now()-started};
+  return {publicAccess:true,unauthenticatedDenied:denied,ownerCatalog:true,authoritativeReplayTicks:result.ticks,elapsedMs:Date.now()-started};
 }`,
   },
   bundle: true,
@@ -87,6 +89,14 @@ for (const file of await readdir('tgcloud', { recursive: true })) {
     );
 }
 const source = bundled.outputFiles[0]?.text;
+// Check the real profile identity path without delivering queued group messages.
+const profileSource = sources['endpoints/getProfile'];
+if (!profileSource?.includes('await flushNotifications();'))
+  throw new Error('Review the profile preflight before running');
+sources['endpoints/getProfile'] = profileSource.replace(
+  'await flushNotifications();',
+  '/* Deployment preflight skips notification delivery. */',
+);
 if (!source) throw new Error('Missing cloud check module');
 sources['endpoints/doomReleaseCheck'] = source;
 const token = text(

@@ -17,7 +17,7 @@ const server = spawn(
     windowsHide: true,
     env: {
       ...process.env,
-      TG_GAMES_DEV_OWNER: '1',
+      TG_GAMES_DEV_OWNER: '0',
       TG_GAMES_DEV_DATABASE: `doom-smoke-${Date.now()}.sqlite`,
     },
   },
@@ -67,26 +67,42 @@ try {
   }
   await page.goto(guestOrigin);
   await expect(page.getByRole('button', { name: 'Играть: Тетрис', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Играть: Freedoom', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Играть: Freedoom', exact: true })).toBeVisible();
+  const created = await page.request.post(`${guestOrigin}/__dev/rpc/createDoomRun`, {
+    data: { requestId: 'public_access_probe_001', skill: '3', playerId: 930852883, isAdmin: true },
+  });
+  const publicRun = (await created.json()) as { ok: boolean; result: { id: string } };
+  assert.equal(publicRun.ok, true);
+  assert.ok(publicRun.result.id.startsWith('1:'), 'Identity must come from endpoint context');
   for (const name of [
-    'createDoomRun',
     'getDoomProgress',
     'appendDoomCommands',
     'interruptDoomRun',
     'verifyDoomRun',
-    'getDoomLeaderboard',
   ]) {
     const response = await page.request.post(`${guestOrigin}/__dev/rpc/${name}`, {
-      data: { playerId: 930852883, isAdmin: true },
+      data: {
+        runId: '930852883:unknown_run',
+        revision: 0,
+        commands: [{ mask: 0, ticks: 1 }],
+        playerId: 930852883,
+        isAdmin: true,
+      },
     });
     const data = (await response.json()) as { ok: boolean; code: string };
     assert.equal(data.ok, false);
-    assert.equal(data.code, 'UNAUTHORIZED');
+    assert.equal(data.code, 'NOT_FOUND');
   }
   await page.goto(`${guestOrigin}/?startapp=game_doom`);
-  await expect(page.getByText('Freedoom пока доступен только владельцу.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Новый забег', exact: true })).toBeVisible();
   assert.equal(await page.locator('.doom-frame').count(), 0);
   const errors: string[] = [];
+  let wadRanges = 0;
+  await page.route('**/engines/doom/freedoom1.wad', (route) => {
+    if (!route.request().headers().range) return route.fulfill({ status: 500, body: 'ERROR' });
+    wadRanges++;
+    return route.continue();
+  });
   const uploadBodies: string[] = [];
   let lostUpload = false;
   await page.route('**/__dev/rpc/appendDoomCommands', async (route) => {
@@ -104,6 +120,7 @@ try {
   assert.equal(await page.locator('input[type=file]').count(), 0);
   await page.getByRole('button', { name: 'Новый забег', exact: true }).click();
   await expect(page.getByText(/^Игра идёт/)).toBeVisible({ timeout: 30000 });
+  assert.ok(wadRanges >= 28, 'The WAD must load in bounded ranges when full responses fail');
   const canvas = page.frameLocator('.doom-frame').locator('canvas');
   await canvas.click();
   await canvas.press('ArrowUp');
@@ -227,7 +244,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    'Doom smoke passed: no uploads, automatic resume, background verification, mobile layout and browser/headless replay through all 9 synthetic test maps.',
+    'Doom smoke passed: public player access, ownership checks, no uploads, automatic resume, background verification, mobile layout and browser/headless replay through all 9 synthetic test maps.',
   );
 } finally {
   await browser.close();

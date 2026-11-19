@@ -7,6 +7,7 @@ export type DoomCommand =
 export type DoomEvent =
   | { type: 'doom:ready' }
   | { type: 'doom:running'; tick: number }
+  | { type: 'doom:loading'; loaded: number; total: number }
   | { type: 'doom:error'; message: string }
   | { type: 'doom:pause-request' }
   | { type: 'doom:paused'; tick: number }

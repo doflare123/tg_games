@@ -13,6 +13,7 @@ import {
   doomTicks,
   doomTime,
 } from '../../../shared/doom.ts';
+import { DOOM_WAD_BYTES } from '../../../shared/doom-content.ts';
 import { canAccessDoom, DOOM_PRIVATE_MESSAGE } from '../../../shared/doom-policy.ts';
 import { integer, object, oneOf } from '../../../shared/errors.ts';
 import { type MobilePad, mountDoomPad } from '../../controls/mobile-pad.ts';
@@ -24,7 +25,7 @@ import type { DoomCommand } from './protocol.ts';
 
 const SAVE_KEY = 'arcade:freedoom:e1:v1';
 export async function mountDoom(host: GameHost): Promise<GameAdapter> {
-  if (!canAccessDoom(hasApi && (await api.profile()).isAdmin)) {
+  if (!canAccessDoom(false) && !canAccessDoom(hasApi && (await api.profile()).isAdmin)) {
     host.container.replaceChildren(element('p', 'empty-state', DOOM_PRIVATE_MESSAGE));
     return { pause() {}, resume() {}, dispose() {} };
   }
@@ -258,6 +259,14 @@ export async function mountDoom(host: GameHost): Promise<GameAdapter> {
         const data = object(event.data);
         if (data.type === 'doom:ready' && run)
           send({ type: 'doom:start', skill: run.skill, commands: recording });
+        if (data.type === 'doom:loading' && !running) {
+          const loaded = integer(data.loaded, 0, DOOM_WAD_BYTES);
+          if (data.total !== DOOM_WAD_BYTES) return;
+          status.textContent =
+            loaded === DOOM_WAD_BYTES
+              ? 'Данные загружены. Запускаем игру…'
+              : `Загрузка Freedoom: ${Math.floor((loaded * 100) / DOOM_WAD_BYTES)}%`;
+        }
         if (data.type === 'doom:running') {
           running = true;
           integer(data.tick, 0, DOOM_MAX_TICKS);
